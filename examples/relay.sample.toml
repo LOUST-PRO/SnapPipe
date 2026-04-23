@@ -1,0 +1,14 @@
+# SnapPipe relay sample configuration
+# This is intentionally self-hosted and operator-controlled.
+
+node_name = "snappipe-relay-prod-1"
+public_hostname = "relay.example.net"
+quic_bind = "0.0.0.0:4433"
+metrics_bind = "127.0.0.1:9109"
+default_alpn = "/snappipe/0"
+# Optional STUN compatibility endpoint if you want to co-locate discovery helpers.
+stun_bind = "0.0.0.0:3478"
+# Ticket TTL in seconds for issued session tickets.
+default_ticket_ttl = 300
+# Relay policy can later be extended with rate limiting / ACL / per-peer budgets.
+relay_mode = "identity-gated"
