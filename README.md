@@ -25,7 +25,7 @@ This repository already implements the **security/control-plane foundation**:
 
 - Ed25519 identity generation
 - stable node IDs derived from public keys
-- signed session tickets
+- signed session tickets with explicit issuer and subject identities
 - offline ticket verification
 - sample relay configuration scaffold
 - CLI for issuing / inspecting / verifying tickets
@@ -76,11 +76,14 @@ Outputs:
 ```bash
 cargo run -- ticket issue \
   --secret-key identity.secret \
+   --subject-public-key peer.public \
   --relay-url quic://relay.example.net:4433 \
   --alpn /snappipe/0 \
   --ttl-seconds 300 \
   --output session.ticket.json
 ```
+
+If `--subject-public-key` is omitted, the issuer defaults to issuing a self-ticket for its own identity.
 
 ### Inspect a ticket
 
@@ -115,6 +118,13 @@ This is not a full relay implementation yet; it is the operator-facing contract 
 ```bash
 cargo test
 ```
+
+## Contribution flow
+
+- use short-lived branches for each architectural slice
+- open PRs even inside the same repo so changes stay reviewable
+- keep transport, relay, and ticket/auth work in separate review units
+- preserve the compatibility path while adding faster optional overlays
 
 ## Licensing
 

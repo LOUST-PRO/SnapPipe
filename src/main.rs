@@ -49,6 +49,8 @@ struct TicketIssueArgs {
     #[arg(long)]
     secret_key: PathBuf,
     #[arg(long)]
+    subject_public_key: Option<PathBuf>,
+    #[arg(long)]
     relay_url: String,
     #[arg(long, default_value = DEFAULT_ALPN)]
     alpn: String,
@@ -120,9 +122,19 @@ fn issue(args: TicketIssueArgs) -> Result<()> {
     let secret_key = fs::read_to_string(&args.secret_key)
         .with_context(|| format!("failed to read {}", args.secret_key.display()))?;
     let signing_key = decode_secret_key(secret_key.trim())?;
+    let subject_key = args
+        .subject_public_key
+        .as_ref()
+        .map(|path| {
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))
+                .and_then(|raw| decode_public_key(raw.trim()).map_err(anyhow::Error::from))
+        })
+        .transpose()?;
     let now = now_unix_seconds();
     let ticket = issue_ticket(
         &signing_key,
+        subject_key.as_ref(),
         args.relay_url,
         args.alpn,
         args.ttl_seconds,
@@ -155,6 +167,7 @@ fn verify(args: TicketVerifyArgs) -> Result<()> {
     let now = args.now.unwrap_or_else(now_unix_seconds);
     let claims = verify_ticket(&ticket, &verifying_key, now)?;
     println!("verified=true");
+    println!("issuer={}", claims.issuer);
     println!("subject={}", claims.subject);
     println!("relay_url={}", claims.relay_url);
     println!("alpn={}", claims.alpn);
