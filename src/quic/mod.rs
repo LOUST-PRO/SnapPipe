@@ -5,9 +5,8 @@ use thiserror::Error;
 
 mod endpoint;
 pub use endpoint::{
-    build_client_endpoint, build_server_endpoint, default_client_config,
-    default_server_config, self_signed_dev_cert, EndpointRole, QuicEndpointConfig,
-    DEFAULT_DEV_SAN,
+    DEFAULT_DEV_SAN, EndpointRole, QuicEndpointConfig, build_client_endpoint,
+    build_server_endpoint, default_client_config, default_server_config, self_signed_dev_cert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,10 +86,7 @@ impl QuicTransportProfile {
         transport.max_idle_timeout(Some(IdleTimeout::try_from(Duration::from_millis(
             self.max_idle_timeout_ms,
         ))?));
-        transport.keep_alive_interval(
-            self.keep_alive_interval_ms
-                .map(Duration::from_millis),
-        );
+        transport.keep_alive_interval(self.keep_alive_interval_ms.map(Duration::from_millis));
         transport.max_concurrent_bidi_streams(VarInt::from_u32(self.max_concurrent_bidi_streams));
         transport.max_concurrent_uni_streams(VarInt::from_u32(self.max_concurrent_uni_streams));
         transport.stream_receive_window(VarInt::from_u64(self.stream_receive_window_bytes)?);

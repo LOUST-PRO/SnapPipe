@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use thiserror::Error;
 
-use crate::{verify_ticket, NodeId, SignedTicket, TicketClaims, TicketError};
+use crate::{NodeId, SignedTicket, TicketClaims, TicketError, verify_ticket};
 
 /// Errors that can arise during the ticket-gated handshake.
 #[derive(Debug, Error)]
@@ -226,7 +226,8 @@ pub async fn server_handshake(
         Ok(claims) => claims,
         Err(err) => {
             let kind: HandshakeErrorKind = (&err).into();
-            let _ = futures_block_on_send(&mut send, &HandshakeResponse::Err { kind: kind.clone() });
+            let _ =
+                futures_block_on_send(&mut send, &HandshakeResponse::Err { kind: kind.clone() });
             return Err(SessionError::Ticket(err));
         }
     };
@@ -259,7 +260,10 @@ pub async fn server_handshake(
     Ok(summary)
 }
 
-async fn futures_block_on_send(send: &mut SendStream, response: &HandshakeResponse) -> Result<(), SessionError> {
+async fn futures_block_on_send(
+    send: &mut SendStream,
+    response: &HandshakeResponse,
+) -> Result<(), SessionError> {
     let bytes = serde_json::to_vec(response)
         .map_err(|err| SessionError::Protocol(format!("encode response: {err}")))?;
     send.write_all(&length_prefix(&bytes)).await?;
@@ -272,11 +276,21 @@ impl HandshakeErrorKind {
     fn into_session_error(self) -> SessionError {
         match self {
             HandshakeErrorKind::TicketExpired => SessionError::Ticket(TicketError::Expired),
-            HandshakeErrorKind::InvalidSignature => SessionError::Ticket(TicketError::InvalidSignature),
-            HandshakeErrorKind::UnsupportedVersion(v) => SessionError::Ticket(TicketError::UnsupportedVersion(v)),
-            HandshakeErrorKind::InvalidKeyEncoding => SessionError::Ticket(TicketError::InvalidKeyEncoding),
-            HandshakeErrorKind::InvalidSignatureEncoding => SessionError::Ticket(TicketError::InvalidSignatureEncoding),
-            HandshakeErrorKind::Serialization => SessionError::Ticket(TicketError::Serialization("server".into())),
+            HandshakeErrorKind::InvalidSignature => {
+                SessionError::Ticket(TicketError::InvalidSignature)
+            }
+            HandshakeErrorKind::UnsupportedVersion(v) => {
+                SessionError::Ticket(TicketError::UnsupportedVersion(v))
+            }
+            HandshakeErrorKind::InvalidKeyEncoding => {
+                SessionError::Ticket(TicketError::InvalidKeyEncoding)
+            }
+            HandshakeErrorKind::InvalidSignatureEncoding => {
+                SessionError::Ticket(TicketError::InvalidSignatureEncoding)
+            }
+            HandshakeErrorKind::Serialization => {
+                SessionError::Ticket(TicketError::Serialization("server".into()))
+            }
             HandshakeErrorKind::IssuerNotTrusted => {
                 SessionError::Protocol("server reported issuer_not_trusted".into())
             }
@@ -293,7 +307,7 @@ impl HandshakeErrorKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{generate_signing_key, issue_ticket, DEFAULT_ALPN};
+    use crate::{DEFAULT_ALPN, generate_signing_key, issue_ticket};
 
     #[test]
     fn handshake_error_kind_roundtrip_and_label() {
@@ -379,6 +393,9 @@ mod tests {
         )
         .unwrap();
         let verified = verify_ticket(&ticket, &issuer.verifying_key(), 1_700_000_010).unwrap();
-        assert_eq!(verified.subject, NodeId::from_verifying_key(&subject.verifying_key()));
+        assert_eq!(
+            verified.subject,
+            NodeId::from_verifying_key(&subject.verifying_key())
+        );
     }
 }

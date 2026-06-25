@@ -74,11 +74,7 @@ impl NonceStore {
     /// record it as seen at `now_unix`. Returns `Ok(true)` on first sighting
     /// (accept), `Ok(false)` on replay (reject), `Err(_)` only on internal
     /// invariants being violated.
-    pub fn check_and_record(
-        &self,
-        nonce: &[u8; 16],
-        now_unix: i64,
-    ) -> Result<bool, NonceError> {
+    pub fn check_and_record(&self, nonce: &[u8; 16], now_unix: i64) -> Result<bool, NonceError> {
         let mut guard = self.inner.lock().expect("nonce store poisoned");
         if let Some(prior) = guard.get(nonce).copied()
             && now_unix.saturating_sub(prior) < self.ttl_secs
@@ -136,11 +132,7 @@ impl NonceStore {
                         NonceError::MalformedLine(format!("line {}: missing ':'", idx + 1))
                     })?;
                     let nonce = hex_decode(hex).map_err(|err| {
-                        NonceError::MalformedLine(format!(
-                            "line {}: bad hex ({})",
-                            idx + 1,
-                            err
-                        ))
+                        NonceError::MalformedLine(format!("line {}: bad hex ({})", idx + 1, err))
                     })?;
                     let ts_val = ts.parse::<i64>().map_err(|err| {
                         NonceError::MalformedLine(format!(
@@ -255,15 +247,31 @@ mod tests {
         let tmp = tempdir().unwrap();
         let path = tmp.path().join("nonces.txt");
         let original = NonceStore::new(120);
-        original.check_and_record(&fixed(11), 1_700_000_000).unwrap();
-        original.check_and_record(&fixed(22), 1_700_000_010).unwrap();
+        original
+            .check_and_record(&fixed(11), 1_700_000_000)
+            .unwrap();
+        original
+            .check_and_record(&fixed(22), 1_700_000_010)
+            .unwrap();
         original.persist_to(&path).unwrap();
 
         let restored = NonceStore::load_from(&path, 120).unwrap();
         assert_eq!(restored.len(), 2);
-        assert!(!restored.check_and_record(&fixed(11), 1_700_000_020).unwrap());
-        assert!(!restored.check_and_record(&fixed(22), 1_700_000_030).unwrap());
-        assert!(restored.check_and_record(&fixed(33), 1_700_000_040).unwrap());
+        assert!(
+            !restored
+                .check_and_record(&fixed(11), 1_700_000_020)
+                .unwrap()
+        );
+        assert!(
+            !restored
+                .check_and_record(&fixed(22), 1_700_000_030)
+                .unwrap()
+        );
+        assert!(
+            restored
+                .check_and_record(&fixed(33), 1_700_000_040)
+                .unwrap()
+        );
     }
 
     #[test]

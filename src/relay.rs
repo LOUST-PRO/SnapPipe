@@ -26,9 +26,9 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::Mutex;
 
+use crate::NodeId;
 use crate::rate_limit::RateLimiter;
 use crate::trust::TrustStore;
-use crate::NodeId;
 
 /// Structured log emitted at the end of each relayed connection.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,7 +72,11 @@ pub struct RelayConfig {
 }
 
 impl RelayConfig {
-    pub fn new(listen_addr: SocketAddr, trust: Arc<TrustStore>, rate_limiter: Arc<RateLimiter>) -> Self {
+    pub fn new(
+        listen_addr: SocketAddr,
+        trust: Arc<TrustStore>,
+        rate_limiter: Arc<RateLimiter>,
+    ) -> Self {
         Self {
             listen_addr,
             trust,
@@ -161,11 +165,7 @@ impl Relay {
         self.sync_node_limit(&peer_node, started_at_unix);
 
         let now = clock();
-        if !self
-            .config
-            .rate_limiter
-            .try_consume(&peer_node, now)
-        {
+        if !self.config.rate_limiter.try_consume(&peer_node, now) {
             return Ok(ConnectionLog {
                 src_node: peer_node,
                 dst_node: None,
@@ -196,11 +196,7 @@ impl Relay {
             };
             bytes_in += n as u64;
 
-            if !self
-                .config
-                .rate_limiter
-                .try_consume(&peer_node, clock())
-            {
+            if !self.config.rate_limiter.try_consume(&peer_node, clock()) {
                 outcome = ConnectionOutcome::RateLimited;
                 break;
             }
@@ -345,11 +341,7 @@ mod tests {
     async fn untrusted_peer_is_rejected_without_forwarding() {
         let trust = Arc::new(TrustStore::new());
         let limiter = Arc::new(RateLimiter::new(100));
-        let config = RelayConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            trust,
-            limiter,
-        );
+        let config = RelayConfig::new("127.0.0.1:0".parse().unwrap(), trust, limiter);
         let relay = Relay::new(config);
 
         let peer = node();
@@ -372,11 +364,7 @@ mod tests {
         let limiter = Arc::new(RateLimiter::new(100));
         let peer = node();
         trust.add(peer.clone(), "trusted", 100);
-        let config = RelayConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            trust,
-            limiter,
-        );
+        let config = RelayConfig::new("127.0.0.1:0".parse().unwrap(), trust, limiter);
         let relay = Relay::new(config);
 
         let payload = b"hello, relay!".to_vec();
@@ -384,13 +372,7 @@ mod tests {
         let outgoing = MemoryStream::default();
 
         let log = relay
-            .handle_connection(
-                peer.clone(),
-                incoming,
-                outgoing,
-                1_000.0,
-                || 1_000.5,
-            )
+            .handle_connection(peer.clone(), incoming, outgoing, 1_000.0, || 1_000.5)
             .await
             .unwrap();
 
@@ -406,11 +388,7 @@ mod tests {
         let limiter = Arc::new(RateLimiter::new(1)); // 1 token total
         let peer = node();
         trust.add(peer.clone(), "trusted", 1);
-        let config = RelayConfig::new(
-            "127.0.0.1:0".parse().unwrap(),
-            trust,
-            limiter,
-        );
+        let config = RelayConfig::new("127.0.0.1:0".parse().unwrap(), trust, limiter);
         let relay = Relay::new(config);
 
         // Pump enough bytes to consume the bucket and trigger rate-limit.

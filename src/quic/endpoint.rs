@@ -99,8 +99,8 @@ pub fn self_signed_dev_cert(extra_sans: &[&str]) -> Result<DevCert, QuicEndpoint
         sans.push((*san).to_owned());
     }
 
-    let certified =
-        generate_simple_self_signed(sans).map_err(|err| QuicEndpointError::Rcgen(err.to_string()))?;
+    let certified = generate_simple_self_signed(sans)
+        .map_err(|err| QuicEndpointError::Rcgen(err.to_string()))?;
     let cert_der: CertificateDer<'static> = certified.cert.der().clone();
     let key_pkcs8 = PrivatePkcs8KeyDer::from(certified.key_pair.serialize_der());
     let key_der = PrivateKeyDer::from(key_pkcs8);
@@ -112,21 +112,28 @@ pub fn self_signed_dev_cert(extra_sans: &[&str]) -> Result<DevCert, QuicEndpoint
 }
 
 /// Build a rustls `ServerConfig` for SnapPipe, with ALPN `/snappipe/0`.
-fn rustls_server_config(dev_cert: &DevCert) -> Result<Arc<rustls::ServerConfig>, QuicEndpointError> {
+fn rustls_server_config(
+    dev_cert: &DevCert,
+) -> Result<Arc<rustls::ServerConfig>, QuicEndpointError> {
     let provider = rustls::crypto::ring::default_provider();
     let provider_arc = Arc::new(provider);
     let mut server_crypto = rustls::ServerConfig::builder_with_provider(provider_arc)
         .with_safe_default_protocol_versions()
         .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?
         .with_no_client_auth()
-        .with_single_cert(dev_cert.cert_chain.clone(), dev_cert.private_key.clone_key())
+        .with_single_cert(
+            dev_cert.cert_chain.clone(),
+            dev_cert.private_key.clone_key(),
+        )
         .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?;
     server_crypto.alpn_protocols = vec![b"/snappipe/0".to_vec()];
     Ok(Arc::new(server_crypto))
 }
 
 /// Build a rustls-backed `ClientConfig` that trusts the given dev cert as a root.
-fn rustls_client_config(dev_cert: &DevCert) -> Result<Arc<rustls::ClientConfig>, QuicEndpointError> {
+fn rustls_client_config(
+    dev_cert: &DevCert,
+) -> Result<Arc<rustls::ClientConfig>, QuicEndpointError> {
     let mut roots = rustls::RootCertStore::empty();
     let cert = dev_cert
         .cert_chain
@@ -165,9 +172,7 @@ pub fn default_client_config(dev_cert: &DevCert) -> Result<ClientConfig, QuicEnd
 
 /// Build a server-only Quinn endpoint bound to `cfg.bind`, using
 /// `cfg.profile` for transport tuning and a self-signed dev cert.
-pub fn build_server_endpoint(
-    cfg: &QuicEndpointConfig,
-) -> Result<Endpoint, QuicEndpointError> {
+pub fn build_server_endpoint(cfg: &QuicEndpointConfig) -> Result<Endpoint, QuicEndpointError> {
     let dev_cert = self_signed_dev_cert(&[])?;
     let mut server_config = default_server_config(&dev_cert)?;
     let transport = Arc::new(cfg.profile.build_transport_config()?);

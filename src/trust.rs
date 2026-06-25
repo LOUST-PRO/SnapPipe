@@ -43,7 +43,11 @@ pub struct TrustEntry {
 }
 
 impl TrustEntry {
-    pub fn new(display_name: impl Into<String>, added_at_unix: i64, rate_limit_per_min: u32) -> Self {
+    pub fn new(
+        display_name: impl Into<String>,
+        added_at_unix: i64,
+        rate_limit_per_min: u32,
+    ) -> Self {
         Self {
             display_name: display_name.into(),
             added_at_unix,
@@ -127,7 +131,9 @@ impl TrustStore {
         }
         let entries = self.list();
         let mut body = String::new();
-        body.push_str("# SnapPipe trust store: one issuer per line as `node_id = \"name:rate\"`.\n");
+        body.push_str(
+            "# SnapPipe trust store: one issuer per line as `node_id = \"name:rate\"`.\n",
+        );
         body.push_str("# Lines beginning with `#` and blank lines are ignored.\n");
         let mut sorted = entries;
         sorted.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
@@ -216,10 +222,12 @@ impl TrustStore {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
-            let (lhs, rhs) = trimmed.split_once('=').ok_or_else(|| TrustStoreError::Malformed {
-                line_no,
-                message: "expected `node_id = \"name:rate\"`".into(),
-            })?;
+            let (lhs, rhs) = trimmed
+                .split_once('=')
+                .ok_or_else(|| TrustStoreError::Malformed {
+                    line_no,
+                    message: "expected `node_id = \"name:rate\"`".into(),
+                })?;
             let node_id_str = lhs.trim();
             let rhs_trim = rhs.trim();
             let payload = rhs_trim
@@ -229,14 +237,20 @@ impl TrustStore {
                     line_no,
                     message: "value must be a double-quoted string".into(),
                 })?;
-            let (name, rate) = payload.split_once(':').ok_or_else(|| TrustStoreError::Malformed {
-                line_no,
-                message: "value must be `\"name:rate\"`".into(),
-            })?;
-            let rate: u32 = rate.trim().parse().map_err(|err| TrustStoreError::Malformed {
-                line_no,
-                message: format!("invalid rate: {err}"),
-            })?;
+            let (name, rate) =
+                payload
+                    .split_once(':')
+                    .ok_or_else(|| TrustStoreError::Malformed {
+                        line_no,
+                        message: "value must be `\"name:rate\"`".into(),
+                    })?;
+            let rate: u32 = rate
+                .trim()
+                .parse()
+                .map_err(|err| TrustStoreError::Malformed {
+                    line_no,
+                    message: format!("invalid rate: {err}"),
+                })?;
             let node_id = NodeId::parse(node_id_str).map_err(|err| TrustStoreError::Malformed {
                 line_no,
                 message: format!("invalid node id: {err}"),

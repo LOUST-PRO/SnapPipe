@@ -147,8 +147,7 @@ pub fn encode_secret_key(signing_key: &SigningKey) -> String {
 
 pub fn decode_secret_key(encoded: &str) -> Result<SigningKey, TicketError> {
     let mut bytes = [0u8; 64];
-    Base64UrlUnpadded::decode(encoded, &mut bytes)
-        .map_err(|_| TicketError::InvalidKeyEncoding)?;
+    Base64UrlUnpadded::decode(encoded, &mut bytes).map_err(|_| TicketError::InvalidKeyEncoding)?;
     SigningKey::from_keypair_bytes(&bytes).map_err(|_| TicketError::InvalidKeyEncoding)
 }
 
@@ -158,8 +157,7 @@ pub fn encode_public_key(verifying_key: &VerifyingKey) -> String {
 
 pub fn decode_public_key(encoded: &str) -> Result<VerifyingKey, TicketError> {
     let mut bytes = [0u8; 32];
-    Base64UrlUnpadded::decode(encoded, &mut bytes)
-        .map_err(|_| TicketError::InvalidKeyEncoding)?;
+    Base64UrlUnpadded::decode(encoded, &mut bytes).map_err(|_| TicketError::InvalidKeyEncoding)?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| TicketError::InvalidKeyEncoding)
 }
 
@@ -172,9 +170,7 @@ pub fn issue_ticket(
     now: i64,
 ) -> Result<SignedTicket, TicketError> {
     let issuer = NodeId::from_verifying_key(&signing_key.verifying_key());
-    let subject = NodeId::from_verifying_key(
-        subject_key.unwrap_or(&signing_key.verifying_key()),
-    );
+    let subject = NodeId::from_verifying_key(subject_key.unwrap_or(&signing_key.verifying_key()));
     let claims = TicketClaims {
         version: TICKET_VERSION,
         issuer,
@@ -277,8 +273,14 @@ mod tests {
         )
         .unwrap();
         let verified = verify_ticket(&ticket, &key.verifying_key(), now + 1).unwrap();
-        assert_eq!(verified.issuer, NodeId::from_verifying_key(&key.verifying_key()));
-        assert_eq!(verified.subject, NodeId::from_verifying_key(&key.verifying_key()));
+        assert_eq!(
+            verified.issuer,
+            NodeId::from_verifying_key(&key.verifying_key())
+        );
+        assert_eq!(
+            verified.subject,
+            NodeId::from_verifying_key(&key.verifying_key())
+        );
         assert_eq!(verified.relay_url, "quic://relay.example.net:4433");
     }
 
@@ -297,8 +299,14 @@ mod tests {
         )
         .unwrap();
         let verified = verify_ticket(&ticket, &issuer.verifying_key(), now + 1).unwrap();
-        assert_eq!(verified.issuer, NodeId::from_verifying_key(&issuer.verifying_key()));
-        assert_eq!(verified.subject, NodeId::from_verifying_key(&subject.verifying_key()));
+        assert_eq!(
+            verified.issuer,
+            NodeId::from_verifying_key(&issuer.verifying_key())
+        );
+        assert_eq!(
+            verified.subject,
+            NodeId::from_verifying_key(&subject.verifying_key())
+        );
     }
 
     #[test]

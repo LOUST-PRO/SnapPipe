@@ -11,12 +11,12 @@ use std::time::Duration;
 
 use snappipe::nonce_store::NonceStore;
 use snappipe::quic::{
-    build_client_endpoint, default_server_config, self_signed_dev_cert, QuicEndpointConfig,
+    QuicEndpointConfig, build_client_endpoint, default_server_config, self_signed_dev_cert,
 };
 use snappipe::rate_limit::RateLimiter;
-use snappipe::session::{client_handshake, server_handshake, TrustCheck};
+use snappipe::session::{TrustCheck, client_handshake, server_handshake};
 use snappipe::trust::TrustStore;
-use snappipe::{generate_signing_key, issue_ticket, NodeId, RelayConfig};
+use snappipe::{NodeId, RelayConfig, generate_signing_key, issue_ticket};
 #[allow(unused_imports)]
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::time::timeout;
@@ -57,8 +57,8 @@ async fn quic_handshake_succeeds_end_to_end() {
     let cert = self_signed_dev_cert(&[]).expect("dev cert");
     let server_cfg = default_server_config(&cert).expect("server quic config");
     let server = quinn::Endpoint::server(server_cfg, dev_bind()).expect("server endpoint");
-    let client = build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert)
-        .expect("client");
+    let client =
+        build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert).expect("client");
     let server_addr = server.local_addr().expect("server addr");
 
     let trust = Arc::new(AllowOne {
@@ -71,15 +71,17 @@ async fn quic_handshake_succeeds_end_to_end() {
         let incoming = server.accept().await.expect("accept");
         let conn = incoming.await.expect("incoming await");
         let (hs_send, hs_recv) = conn.accept_bi().await.expect("accept_bi handshake");
-        let result = server_handshake(hs_send, hs_recv, &issuer_vk, &subject_vk, trust, now + 300).await;
+        let result =
+            server_handshake(hs_send, hs_recv, &issuer_vk, &subject_vk, trust, now + 300).await;
         if result.is_ok()
-            && let Ok((mut data_send, mut data_recv)) = conn.accept_bi().await {
-                let mut buf = vec![0u8; 4096];
-                if let Ok(Some(n)) = data_recv.read(&mut buf).await {
-                    let _ = data_send.write_all(&buf[..n]).await;
-                    let _ = data_send.finish();
-                }
+            && let Ok((mut data_send, mut data_recv)) = conn.accept_bi().await
+        {
+            let mut buf = vec![0u8; 4096];
+            if let Ok(Some(n)) = data_recv.read(&mut buf).await {
+                let _ = data_send.write_all(&buf[..n]).await;
+                let _ = data_send.finish();
             }
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
         result
     });
@@ -124,8 +126,8 @@ async fn quic_stream_roundtrip_transfers_payload() {
     let cert = self_signed_dev_cert(&[]).expect("cert");
     let server_cfg = default_server_config(&cert).expect("server quic config");
     let server = quinn::Endpoint::server(server_cfg, dev_bind()).expect("server");
-    let client = build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert)
-        .expect("client");
+    let client =
+        build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert).expect("client");
     let server_addr = server.local_addr().expect("addr");
 
     let trust = Arc::new(AllowOne {
@@ -138,15 +140,17 @@ async fn quic_stream_roundtrip_transfers_payload() {
         let incoming = server.accept().await.expect("accept");
         let conn = incoming.await.expect("incoming await");
         let (hs_send, hs_recv) = conn.accept_bi().await.expect("accept_bi handshake");
-        let result = server_handshake(hs_send, hs_recv, &issuer_vk, &subject_vk, trust, now + 300).await;
+        let result =
+            server_handshake(hs_send, hs_recv, &issuer_vk, &subject_vk, trust, now + 300).await;
         if result.is_ok()
-            && let Ok((mut data_send, mut data_recv)) = conn.accept_bi().await {
-                let mut buf = vec![0u8; 4096];
-                if let Ok(Some(n)) = data_recv.read(&mut buf).await {
-                    let _ = data_send.write_all(&buf[..n]).await;
-                    let _ = data_send.finish();
-                }
+            && let Ok((mut data_send, mut data_recv)) = conn.accept_bi().await
+        {
+            let mut buf = vec![0u8; 4096];
+            if let Ok(Some(n)) = data_recv.read(&mut buf).await {
+                let _ = data_send.write_all(&buf[..n]).await;
+                let _ = data_send.finish();
             }
+        }
         tokio::time::sleep(Duration::from_millis(50)).await;
         result
     });
@@ -195,8 +199,8 @@ async fn relay_rejects_untrusted_issuer() {
     let cert = self_signed_dev_cert(&[]).expect("cert");
     let server_cfg = default_server_config(&cert).expect("server quic config");
     let server = quinn::Endpoint::server(server_cfg, dev_bind()).expect("server");
-    let client = build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert)
-        .expect("client");
+    let client =
+        build_client_endpoint(&QuicEndpointConfig::client(dev_bind()), &cert).expect("client");
     let server_addr = server.local_addr().expect("addr");
 
     let trust = Arc::new(AllowOne {
@@ -223,7 +227,10 @@ async fn relay_rejects_untrusted_issuer() {
 
     let server_result = _server_task.await.expect("server join");
     assert!(result.is_err(), "client must fail when issuer is untrusted");
-    assert!(server_result.is_err(), "server must reject untrusted issuer");
+    assert!(
+        server_result.is_err(),
+        "server must reject untrusted issuer"
+    );
 
     client_conn.close(0u32.into(), b"test done");
 }

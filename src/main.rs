@@ -1,10 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use snappipe::{
-    decode_public_key, decode_secret_key, encode_public_key, encode_secret_key,
-    generate_signing_key, issue_ticket, now_unix_seconds, quic::QuicTransportProfile,
-    to_pretty_json, verify_ticket, RelayConfig, SignedTicket, DEFAULT_ALPN,
-    DEFAULT_TICKET_TTL_SECS,
+    DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS, RelayConfig, SignedTicket, decode_public_key,
+    decode_secret_key, encode_public_key, encode_secret_key, generate_signing_key, issue_ticket,
+    now_unix_seconds, quic::QuicTransportProfile, to_pretty_json, verify_ticket,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -201,8 +200,7 @@ fn verify(args: TicketVerifyArgs) -> Result<()> {
 fn sample_config(args: RelaySampleConfigArgs) -> Result<()> {
     let config = RelayConfig::sample().to_toml_like();
     if let Some(path) = args.output {
-        fs::write(&path, &config)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        fs::write(&path, &config).with_context(|| format!("failed to write {}", path.display()))?;
         println!("sample_config_path={}", path.display());
     } else {
         println!("{config}");
@@ -232,8 +230,8 @@ fn quic_profile(args: QuicProfileArgs) -> Result<()> {
 }
 
 fn load_ticket(path: &PathBuf) -> Result<SignedTicket> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let ticket = serde_json::from_str::<SignedTicket>(raw.trim())
         .with_context(|| format!("failed to parse {} as SignedTicket JSON", path.display()))?;
     Ok(ticket)

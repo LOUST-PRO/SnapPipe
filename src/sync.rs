@@ -81,11 +81,10 @@ pub fn walk_dir_with<P: WalkPredicate>(
     root: &Path,
     predicate: P,
 ) -> Result<Vec<FileEntry>, SyncError> {
-    let meta = std::fs::metadata(root)
-        .map_err(|err| SyncError::Walk {
-            path: root.to_path_buf(),
-            message: err.to_string(),
-        })?;
+    let meta = std::fs::metadata(root).map_err(|err| SyncError::Walk {
+        path: root.to_path_buf(),
+        message: err.to_string(),
+    })?;
     if !meta.is_dir() {
         return Err(SyncError::NotADirectory(root.to_path_buf()));
     }
@@ -110,27 +109,29 @@ pub fn walk_dir_with<P: WalkPredicate>(
         .collect();
 
     if entries.len() > PARALLEL_THRESHOLD {
-        entries.par_iter().try_for_each(|entry| -> Result<(), SyncError> {
-            if entry.file_type().is_dir() {
-                return Ok(());
-            }
-            let path = entry.path();
-            let rel = path
-                .strip_prefix(root)
-                .map_err(|_| SyncError::PathEscape(path.to_string_lossy().to_string()))?
-                .to_string_lossy()
-                .replace('\\', "/");
-            if rel.is_empty() {
-                return Ok(());
-            }
-            let entry_meta = std::fs::metadata(path).map_err(|err| SyncError::Walk {
-                path: path.to_path_buf(),
-                message: err.to_string(),
+        entries
+            .par_iter()
+            .try_for_each(|entry| -> Result<(), SyncError> {
+                if entry.file_type().is_dir() {
+                    return Ok(());
+                }
+                let path = entry.path();
+                let rel = path
+                    .strip_prefix(root)
+                    .map_err(|_| SyncError::PathEscape(path.to_string_lossy().to_string()))?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                if rel.is_empty() {
+                    return Ok(());
+                }
+                let entry_meta = std::fs::metadata(path).map_err(|err| SyncError::Walk {
+                    path: path.to_path_buf(),
+                    message: err.to_string(),
+                })?;
+                let record = build_entry(&rel, &entry_meta);
+                collected.lock().expect("poisoned").push(record);
+                Ok(())
             })?;
-            let record = build_entry(&rel, &entry_meta);
-            collected.lock().expect("poisoned").push(record);
-            Ok(())
-        })?;
     } else {
         for entry in &entries {
             if entry.file_type().is_dir() {
