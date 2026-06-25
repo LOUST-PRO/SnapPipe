@@ -124,6 +124,15 @@ cargo run -- ticket verify \
 cargo run -- relay sample-config --output relay.sample.toml
 ```
 
+### Emit a QUIC transport profile
+
+```bash
+cargo run -- quic profile \
+   --preset low-latency-interactive \
+   --alpn /snappipe/0 \
+   --output quic.profile.json
+```
+
 ## Example relay config
 
 A starter config lives in:

@@ -1,8 +1,9 @@
 use quinn::{IdleTimeout, MtuDiscoveryConfig, TransportConfig, VarInt, VarIntBoundsExceeded};
+use serde::Serialize;
 use std::time::Duration;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct QuicTransportProfile {
     pub name: &'static str,
     pub alpn: String,

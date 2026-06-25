@@ -2,8 +2,9 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use snappipe::{
     decode_public_key, decode_secret_key, encode_public_key, encode_secret_key,
-    generate_signing_key, issue_ticket, now_unix_seconds, to_pretty_json, verify_ticket,
-    RelayConfig, SignedTicket, DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS,
+    generate_signing_key, issue_ticket, now_unix_seconds, quic::QuicTransportProfile,
+    to_pretty_json, verify_ticket, RelayConfig, SignedTicket, DEFAULT_ALPN,
+    DEFAULT_TICKET_TTL_SECS,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -26,6 +27,10 @@ enum Command {
     Relay {
         #[command(subcommand)]
         command: RelayCommand,
+    },
+    Quic {
+        #[command(subcommand)]
+        command: QuicCommand,
     },
 }
 
@@ -81,8 +86,23 @@ enum RelayCommand {
     SampleConfig(RelaySampleConfigArgs),
 }
 
+#[derive(Subcommand, Debug)]
+enum QuicCommand {
+    Profile(QuicProfileArgs),
+}
+
 #[derive(Args, Debug)]
 struct RelaySampleConfigArgs {
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct QuicProfileArgs {
+    #[arg(long, default_value = "low-latency-interactive")]
+    preset: String,
+    #[arg(long, default_value = DEFAULT_ALPN)]
+    alpn: String,
     #[arg(long)]
     output: Option<PathBuf>,
 }
@@ -98,6 +118,9 @@ fn main() -> Result<()> {
         },
         Command::Relay { command } => match command {
             RelayCommand::SampleConfig(args) => sample_config(args),
+        },
+        Command::Quic { command } => match command {
+            QuicCommand::Profile(args) => quic_profile(args),
         },
     }
 }
@@ -184,6 +207,27 @@ fn sample_config(args: RelaySampleConfigArgs) -> Result<()> {
     } else {
         println!("{config}");
     }
+    Ok(())
+}
+
+fn quic_profile(args: QuicProfileArgs) -> Result<()> {
+    let profile = match args.preset.as_str() {
+        "low-latency-interactive" => QuicTransportProfile::low_latency_interactive(args.alpn),
+        "relay-backhaul" => QuicTransportProfile::relay_backhaul(args.alpn),
+        other => anyhow::bail!(
+            "unknown quic preset: {other}. expected one of: low-latency-interactive, relay-backhaul"
+        ),
+    };
+    let json = to_pretty_json(&profile)?;
+
+    if let Some(path) = args.output {
+        fs::write(&path, format!("{}\n", json))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        println!("quic_profile_path={}", path.display());
+    } else {
+        println!("{json}");
+    }
+
     Ok(())
 }
 
