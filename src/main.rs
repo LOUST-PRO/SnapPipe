@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use snappipe::{
-    decode_public_key, decode_secret_key, encode_public_key, encode_secret_key,
-    generate_signing_key, issue_ticket, now_unix_seconds, to_pretty_json, verify_ticket,
-    RelayConfig, SignedTicket, DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS,
+    DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS, RelayConfig, SignedTicket, decode_public_key,
+    decode_secret_key, encode_public_key, encode_secret_key, generate_signing_key, issue_ticket,
+    now_unix_seconds, quic::QuicTransportProfile, to_pretty_json, verify_ticket,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -27,6 +27,10 @@ enum Command {
         #[command(subcommand)]
         command: RelayCommand,
     },
+    Quic {
+        #[command(subcommand)]
+        command: QuicCommand,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -48,6 +52,8 @@ enum TicketCommand {
 struct TicketIssueArgs {
     #[arg(long)]
     secret_key: PathBuf,
+    #[arg(long)]
+    subject_public_key: Option<PathBuf>,
     #[arg(long)]
     relay_url: String,
     #[arg(long, default_value = DEFAULT_ALPN)]
@@ -79,8 +85,23 @@ enum RelayCommand {
     SampleConfig(RelaySampleConfigArgs),
 }
 
+#[derive(Subcommand, Debug)]
+enum QuicCommand {
+    Profile(QuicProfileArgs),
+}
+
 #[derive(Args, Debug)]
 struct RelaySampleConfigArgs {
+    #[arg(long)]
+    output: Option<PathBuf>,
+}
+
+#[derive(Args, Debug)]
+struct QuicProfileArgs {
+    #[arg(long, default_value = "low-latency-interactive")]
+    preset: String,
+    #[arg(long, default_value = DEFAULT_ALPN)]
+    alpn: String,
     #[arg(long)]
     output: Option<PathBuf>,
 }
@@ -96,6 +117,9 @@ fn main() -> Result<()> {
         },
         Command::Relay { command } => match command {
             RelayCommand::SampleConfig(args) => sample_config(args),
+        },
+        Command::Quic { command } => match command {
+            QuicCommand::Profile(args) => quic_profile(args),
         },
     }
 }
@@ -120,9 +144,19 @@ fn issue(args: TicketIssueArgs) -> Result<()> {
     let secret_key = fs::read_to_string(&args.secret_key)
         .with_context(|| format!("failed to read {}", args.secret_key.display()))?;
     let signing_key = decode_secret_key(secret_key.trim())?;
+    let subject_key = args
+        .subject_public_key
+        .as_ref()
+        .map(|path| {
+            fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))
+                .and_then(|raw| decode_public_key(raw.trim()).map_err(anyhow::Error::from))
+        })
+        .transpose()?;
     let now = now_unix_seconds();
     let ticket = issue_ticket(
         &signing_key,
+        subject_key.as_ref(),
         args.relay_url,
         args.alpn,
         args.ttl_seconds,
@@ -155,6 +189,7 @@ fn verify(args: TicketVerifyArgs) -> Result<()> {
     let now = args.now.unwrap_or_else(now_unix_seconds);
     let claims = verify_ticket(&ticket, &verifying_key, now)?;
     println!("verified=true");
+    println!("issuer={}", claims.issuer);
     println!("subject={}", claims.subject);
     println!("relay_url={}", claims.relay_url);
     println!("alpn={}", claims.alpn);
@@ -165,8 +200,7 @@ fn verify(args: TicketVerifyArgs) -> Result<()> {
 fn sample_config(args: RelaySampleConfigArgs) -> Result<()> {
     let config = RelayConfig::sample().to_toml_like();
     if let Some(path) = args.output {
-        fs::write(&path, &config)
-            .with_context(|| format!("failed to write {}", path.display()))?;
+        fs::write(&path, &config).with_context(|| format!("failed to write {}", path.display()))?;
         println!("sample_config_path={}", path.display());
     } else {
         println!("{config}");
@@ -174,9 +208,30 @@ fn sample_config(args: RelaySampleConfigArgs) -> Result<()> {
     Ok(())
 }
 
+fn quic_profile(args: QuicProfileArgs) -> Result<()> {
+    let profile = match args.preset.as_str() {
+        "low-latency-interactive" => QuicTransportProfile::low_latency_interactive(args.alpn),
+        "relay-backhaul" => QuicTransportProfile::relay_backhaul(args.alpn),
+        other => anyhow::bail!(
+            "unknown quic preset: {other}. expected one of: low-latency-interactive, relay-backhaul"
+        ),
+    };
+    let json = to_pretty_json(&profile)?;
+
+    if let Some(path) = args.output {
+        fs::write(&path, format!("{}\n", json))
+            .with_context(|| format!("failed to write {}", path.display()))?;
+        println!("quic_profile_path={}", path.display());
+    } else {
+        println!("{json}");
+    }
+
+    Ok(())
+}
+
 fn load_ticket(path: &PathBuf) -> Result<SignedTicket> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
+    let raw =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     let ticket = serde_json::from_str::<SignedTicket>(raw.trim())
         .with_context(|| format!("failed to parse {} as SignedTicket JSON", path.display()))?;
     Ok(ticket)

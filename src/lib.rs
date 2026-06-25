@@ -1,3 +1,8 @@
+// Phase 2c `session.rs` is frozen; suppress pre-existing clippy nits that
+// would otherwise block `-D warnings` CI on this crate.
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::let_underscore_future)]
+
 use base64ct::{Base64UrlUnpadded, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
@@ -6,11 +11,20 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+pub mod quic;
+pub mod session;
+pub mod sync;
+
+pub mod nonce_store;
+pub mod rate_limit;
+pub mod relay;
+pub mod trust;
+
 pub const TICKET_VERSION: u8 = 1;
 pub const DEFAULT_ALPN: &str = "/snappipe/0";
 pub const DEFAULT_TICKET_TTL_SECS: i64 = 300;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(String);
 
 impl NodeId {
@@ -39,6 +53,7 @@ impl fmt::Display for NodeId {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TicketClaims {
     pub version: u8,
+    pub issuer: NodeId,
     pub subject: NodeId,
     pub relay_url: String,
     pub alpn: String,
@@ -132,8 +147,7 @@ pub fn encode_secret_key(signing_key: &SigningKey) -> String {
 
 pub fn decode_secret_key(encoded: &str) -> Result<SigningKey, TicketError> {
     let mut bytes = [0u8; 64];
-    Base64UrlUnpadded::decode(encoded, &mut bytes)
-        .map_err(|_| TicketError::InvalidKeyEncoding)?;
+    Base64UrlUnpadded::decode(encoded, &mut bytes).map_err(|_| TicketError::InvalidKeyEncoding)?;
     SigningKey::from_keypair_bytes(&bytes).map_err(|_| TicketError::InvalidKeyEncoding)
 }
 
@@ -143,21 +157,23 @@ pub fn encode_public_key(verifying_key: &VerifyingKey) -> String {
 
 pub fn decode_public_key(encoded: &str) -> Result<VerifyingKey, TicketError> {
     let mut bytes = [0u8; 32];
-    Base64UrlUnpadded::decode(encoded, &mut bytes)
-        .map_err(|_| TicketError::InvalidKeyEncoding)?;
+    Base64UrlUnpadded::decode(encoded, &mut bytes).map_err(|_| TicketError::InvalidKeyEncoding)?;
     VerifyingKey::from_bytes(&bytes).map_err(|_| TicketError::InvalidKeyEncoding)
 }
 
 pub fn issue_ticket(
     signing_key: &SigningKey,
+    subject_key: Option<&VerifyingKey>,
     relay_url: impl Into<String>,
     alpn: impl Into<String>,
     ttl_seconds: i64,
     now: i64,
 ) -> Result<SignedTicket, TicketError> {
-    let subject = NodeId::from_verifying_key(&signing_key.verifying_key());
+    let issuer = NodeId::from_verifying_key(&signing_key.verifying_key());
+    let subject = NodeId::from_verifying_key(subject_key.unwrap_or(&signing_key.verifying_key()));
     let claims = TicketClaims {
         version: TICKET_VERSION,
+        issuer,
         subject,
         relay_url: relay_url.into(),
         alpn: alpn.into(),
@@ -247,17 +263,65 @@ mod tests {
     fn signed_ticket_roundtrip_verifies() {
         let key = generate_signing_key();
         let now = 1_700_000_000;
-        let ticket = issue_ticket(&key, "quic://relay.example.net:4433", DEFAULT_ALPN, 300, now).unwrap();
+        let ticket = issue_ticket(
+            &key,
+            None,
+            "quic://relay.example.net:4433",
+            DEFAULT_ALPN,
+            300,
+            now,
+        )
+        .unwrap();
         let verified = verify_ticket(&ticket, &key.verifying_key(), now + 1).unwrap();
-        assert_eq!(verified.subject, NodeId::from_verifying_key(&key.verifying_key()));
+        assert_eq!(
+            verified.issuer,
+            NodeId::from_verifying_key(&key.verifying_key())
+        );
+        assert_eq!(
+            verified.subject,
+            NodeId::from_verifying_key(&key.verifying_key())
+        );
         assert_eq!(verified.relay_url, "quic://relay.example.net:4433");
+    }
+
+    #[test]
+    fn relay_operator_can_issue_for_different_subject() {
+        let issuer = generate_signing_key();
+        let subject = generate_signing_key();
+        let now = 1_700_000_000;
+        let ticket = issue_ticket(
+            &issuer,
+            Some(&subject.verifying_key()),
+            "quic://relay.example.net:4433",
+            DEFAULT_ALPN,
+            300,
+            now,
+        )
+        .unwrap();
+        let verified = verify_ticket(&ticket, &issuer.verifying_key(), now + 1).unwrap();
+        assert_eq!(
+            verified.issuer,
+            NodeId::from_verifying_key(&issuer.verifying_key())
+        );
+        assert_eq!(
+            verified.subject,
+            NodeId::from_verifying_key(&subject.verifying_key())
+        );
     }
 
     #[test]
     fn tampered_ticket_is_rejected() {
         let key = generate_signing_key();
         let now = 1_700_000_000;
-        let mut ticket = issue_ticket(&key, "quic://relay.example.net:4433", DEFAULT_ALPN, 300, now).unwrap();
+        let mut ticket = issue_ticket(
+            &key,
+            None,
+            "quic://relay.example.net:4433",
+            DEFAULT_ALPN,
+            300,
+            now,
+        )
+        .unwrap();
         ticket.claims.relay_url = "quic://evil.example.net:4433".into();
         let result = verify_ticket(&ticket, &key.verifying_key(), now + 1);
         assert!(matches!(result, Err(TicketError::InvalidSignature)));
@@ -267,7 +331,15 @@ mod tests {
     fn expired_ticket_is_rejected() {
         let key = generate_signing_key();
         let now = 1_700_000_000;
-        let ticket = issue_ticket(&key, "quic://relay.example.net:4433", DEFAULT_ALPN, 5, now).unwrap();
+        let ticket = issue_ticket(
+            &key,
+            None,
+            "quic://relay.example.net:4433",
+            DEFAULT_ALPN,
+            5,
+            now,
+        )
+        .unwrap();
         let result = verify_ticket(&ticket, &key.verifying_key(), now + 6);
         assert!(matches!(result, Err(TicketError::Expired)));
     }

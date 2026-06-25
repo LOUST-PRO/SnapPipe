@@ -25,12 +25,31 @@ This repository already implements the **security/control-plane foundation**:
 
 - Ed25519 identity generation
 - stable node IDs derived from public keys
-- signed session tickets
+- signed session tickets with explicit issuer and subject identities
 - offline ticket verification
+- Quinn-based QUIC transport profiles for low-latency and relay-oriented tuning
 - sample relay configuration scaffold
 - CLI for issuing / inspecting / verifying tickets
 
 This is intentionally the **first serious layer**, not a fake “we solved everything” release.
+
+## Architecture
+
+Detailed system notes live in `ARCHITECTURE.md`.
+
+```mermaid
+graph LR
+   Identity[Identity Keys]
+   Ticket[Signed Ticket]
+   Quinn[Quinn QUIC Profile]
+   Relay[Self-hosted Relay]
+   Session[Session Data Path]
+
+   Identity --> Ticket
+   Ticket --> Quinn
+   Quinn --> Relay
+   Quinn --> Session
+```
 
 ## Why the name SnapPipe
 
@@ -45,7 +64,7 @@ And a second quality of the design is more personal / philosophical:
 Planned follow-up layers:
 
 1. **QUIC transport core**
-   - likely via `quinn`
+   - foundation now modeled via `quinn` transport profiles
    - unreliable / low-latency data path friendly to rollback-style traffic
 
 2. **Identity-gated relay service**
@@ -76,11 +95,14 @@ Outputs:
 ```bash
 cargo run -- ticket issue \
   --secret-key identity.secret \
+   --subject-public-key peer.public \
   --relay-url quic://relay.example.net:4433 \
   --alpn /snappipe/0 \
   --ttl-seconds 300 \
   --output session.ticket.json
 ```
+
+If `--subject-public-key` is omitted, the issuer defaults to issuing a self-ticket for its own identity.
 
 ### Inspect a ticket
 
@@ -102,6 +124,15 @@ cargo run -- ticket verify \
 cargo run -- relay sample-config --output relay.sample.toml
 ```
 
+### Emit a QUIC transport profile
+
+```bash
+cargo run -- quic profile \
+   --preset low-latency-interactive \
+   --alpn /snappipe/0 \
+   --output quic.profile.json
+```
+
 ## Example relay config
 
 A starter config lives in:
@@ -115,6 +146,22 @@ This is not a full relay implementation yet; it is the operator-facing contract 
 ```bash
 cargo test
 ```
+
+## QUIC notes
+
+The repository now includes Quinn-based transport profiles in `src/quic.rs` for:
+
+- low-latency interactive sessions
+- relay/backhaul-oriented sessions
+
+This is a transport-configuration foundation, not a claim that the full runtime/session orchestrator is finished.
+
+## Contribution flow
+
+- use short-lived branches for each architectural slice
+- open PRs even inside the same repo so changes stay reviewable
+- keep transport, relay, and ticket/auth work in separate review units
+- preserve the compatibility path while adding faster optional overlays
 
 ## Licensing
 
