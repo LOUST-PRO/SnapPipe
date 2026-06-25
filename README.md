@@ -118,12 +118,11 @@ cargo test
 
 ## Licensing
 
-Dual licensed under either:
-
-- MIT (`LICENSE-MIT`)
-- Apache-2.0 (`LICENSE-APACHE`)
-
-at your option.
+Licensed under Apache-2.0. See [`LICENSE-APACHE`](LICENSE-APACHE) for the
+full text. This is a deliberate single-license choice made on 2026-06-25:
+the explicit patent grant and retaliation clause are the right fit for
+B2B/infra tooling. Earlier dual-license (`MIT OR Apache-2.0`) was used
+during initial bootstrap; that combination is no longer offered.
 
 ## Notes on inspiration
 
