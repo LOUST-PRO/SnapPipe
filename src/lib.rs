@@ -6,6 +6,8 @@ use std::fmt;
 use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
+pub mod quic;
+
 pub const TICKET_VERSION: u8 = 1;
 pub const DEFAULT_ALPN: &str = "/snappipe/0";
 pub const DEFAULT_TICKET_TTL_SECS: i64 = 300;

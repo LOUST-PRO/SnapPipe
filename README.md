@@ -27,10 +27,29 @@ This repository already implements the **security/control-plane foundation**:
 - stable node IDs derived from public keys
 - signed session tickets with explicit issuer and subject identities
 - offline ticket verification
+- Quinn-based QUIC transport profiles for low-latency and relay-oriented tuning
 - sample relay configuration scaffold
 - CLI for issuing / inspecting / verifying tickets
 
 This is intentionally the **first serious layer**, not a fake “we solved everything” release.
+
+## Architecture
+
+Detailed system notes live in `ARCHITECTURE.md`.
+
+```mermaid
+graph LR
+   Identity[Identity Keys]
+   Ticket[Signed Ticket]
+   Quinn[Quinn QUIC Profile]
+   Relay[Self-hosted Relay]
+   Session[Session Data Path]
+
+   Identity --> Ticket
+   Ticket --> Quinn
+   Quinn --> Relay
+   Quinn --> Session
+```
 
 ## Why the name SnapPipe
 
@@ -45,7 +64,7 @@ And a second quality of the design is more personal / philosophical:
 Planned follow-up layers:
 
 1. **QUIC transport core**
-   - likely via `quinn`
+   - foundation now modeled via `quinn` transport profiles
    - unreliable / low-latency data path friendly to rollback-style traffic
 
 2. **Identity-gated relay service**
@@ -118,6 +137,15 @@ This is not a full relay implementation yet; it is the operator-facing contract 
 ```bash
 cargo test
 ```
+
+## QUIC notes
+
+The repository now includes Quinn-based transport profiles in `src/quic.rs` for:
+
+- low-latency interactive sessions
+- relay/backhaul-oriented sessions
+
+This is a transport-configuration foundation, not a claim that the full runtime/session orchestrator is finished.
 
 ## Contribution flow
 

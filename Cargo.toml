@@ -14,6 +14,7 @@ anyhow = "1.0"
 base64ct = { version = "1.8", features = ["std"] }
 clap = { version = "4.5", features = ["derive"] }
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
