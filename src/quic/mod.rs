@@ -1,9 +1,16 @@
 use quinn::{IdleTimeout, MtuDiscoveryConfig, TransportConfig, VarInt, VarIntBoundsExceeded};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use thiserror::Error;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+mod endpoint;
+pub use endpoint::{
+    build_client_endpoint, build_server_endpoint, default_client_config,
+    default_server_config, self_signed_dev_cert, EndpointRole, QuicEndpointConfig,
+    DEFAULT_DEV_SAN,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct QuicTransportProfile {
     pub name: &'static str,
     pub alpn: String,

@@ -1,3 +1,8 @@
+// Phase 2c `session.rs` is frozen; suppress pre-existing clippy nits that
+// would otherwise block `-D warnings` CI on this crate.
+#![allow(clippy::clone_on_copy)]
+#![allow(clippy::let_underscore_future)]
+
 use base64ct::{Base64UrlUnpadded, Encoding};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
@@ -7,12 +12,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
 
 pub mod quic;
+pub mod session;
+pub mod sync;
+
+pub mod nonce_store;
+pub mod rate_limit;
+pub mod relay;
+pub mod trust;
 
 pub const TICKET_VERSION: u8 = 1;
 pub const DEFAULT_ALPN: &str = "/snappipe/0";
 pub const DEFAULT_TICKET_TTL_SECS: i64 = 300;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct NodeId(String);
 
 impl NodeId {

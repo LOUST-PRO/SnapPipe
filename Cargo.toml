@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 description = "Identity-based QUIC transport toolkit with signed tickets and self-hosted relay scaffolding"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/louzt/SnapPipe"
+repository = "https://github.com/LOUST-PRO/SnapPipe"
 readme = "README.md"
 keywords = ["quic", "p2p", "tickets", "relay", "networking"]
 categories = ["network-programming", "command-line-utilities"]
@@ -13,12 +13,21 @@ categories = ["network-programming", "command-line-utilities"]
 anyhow = "1.0"
 base64ct = { version = "1.8", features = ["std"] }
 clap = { version = "4.5", features = ["derive"] }
+dirs = "5"
 ed25519-dalek = { version = "2.2", features = ["rand_core"] }
+filetime = "0.2"
 quinn = { version = "0.11.9", default-features = false, features = ["runtime-tokio", "rustls-ring"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
+rayon = "1.10"
+rcgen = "0.13"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
+toml = "0.8"
+walkdir = "2"
 
 [dev-dependencies]
+insta = { version = "1.40", features = ["json"] }
 tempfile = "3.23"
