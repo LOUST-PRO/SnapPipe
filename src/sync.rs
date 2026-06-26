@@ -20,15 +20,51 @@ use walkdir::WalkDir;
 /// Number of files above which the walk switches to a parallel collect.
 pub const PARALLEL_THRESHOLD: usize = 100;
 
+/// Subsecond-precise POSIX mtime. Two writes within the same wall-clock
+/// second are still distinguishable, so the sync plane's diff engine will
+/// not drop edits performed in a fast deploy loop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct Mtime {
+    pub secs: i64,
+    pub nanos: u32,
+}
+
+impl Mtime {
+    pub const ZERO: Self = Self { secs: 0, nanos: 0 };
+
+    pub fn from_system_time(t: std::time::SystemTime) -> Option<Self> {
+        let dur = t.duration_since(std::time::UNIX_EPOCH).ok()?;
+        Some(Self {
+            secs: dur.as_secs() as i64,
+            nanos: dur.subsec_nanos(),
+        })
+    }
+
+    pub fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+        meta.modified().ok().and_then(Self::from_system_time)
+    }
+
+    pub fn is_known(self) -> bool {
+        self.secs > 0 || self.nanos > 0
+    }
+}
+
+impl Default for Mtime {
+    fn default() -> Self {
+        Self::ZERO
+    }
+}
+
 /// Canonical record describing a single regular file on disk.
 ///
 /// `path` is always relative to the walk root and uses forward slashes.
-/// `mtime_unix` is the file's POSIX mtime in seconds since the unix epoch.
+/// `mtime` carries subsecond precision so two writes in the same second are
+/// still distinguishable by the diff engine.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FileEntry {
     pub path: String,
     pub size: u64,
-    pub mtime_unix: i64,
+    pub mtime: Mtime,
     pub executable: bool,
     pub mode: u32,
 }
@@ -91,22 +127,29 @@ pub fn walk_dir_with<P: WalkPredicate>(
 
     let collected: Mutex<Vec<FileEntry>> = Mutex::new(Vec::new());
 
-    let iter = WalkDir::new(root).follow_links(false).into_iter();
-    let entries: Vec<_> = iter
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            let rel = match entry.path().strip_prefix(root) {
-                Ok(p) => p.to_string_lossy().replace('\\', "/"),
-                Err(_) => return false,
-            };
-            let rel_for_predicate = if rel.is_empty() {
-                String::new()
-            } else {
-                rel.clone()
-            };
-            predicate.keep(&rel_for_predicate, entry.file_type().is_dir())
-        })
-        .collect();
+    // Phase 1: enumerate WalkDir, propagating I/O errors instead of swallowing
+    // them via `.filter_map(|e| e.ok())`. A transient permission denied on a
+    // subdirectory must surface to the caller — silent skip would mean a
+    // half-walked tree, and a sync that proceeds from a half-walked tree
+    // risks deleting files that the walker never saw.
+    let mut entries: Vec<walkdir::DirEntry> = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false).into_iter() {
+        let entry = entry.map_err(|err| SyncError::Walk {
+            path: err
+                .path()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| root.to_path_buf()),
+            message: err.to_string(),
+        })?;
+        let rel = match entry.path().strip_prefix(root) {
+            Ok(p) => p.to_string_lossy().replace('\\', "/"),
+            Err(_) => continue,
+        };
+        let rel_for_predicate = if rel.is_empty() { String::new() } else { rel };
+        if predicate.keep(&rel_for_predicate, entry.file_type().is_dir()) {
+            entries.push(entry);
+        }
+    }
 
     if entries.len() > PARALLEL_THRESHOLD {
         entries
@@ -163,17 +206,13 @@ pub fn walk_dir_with<P: WalkPredicate>(
 }
 
 fn build_entry(rel: &str, meta: &std::fs::Metadata) -> FileEntry {
-    let mtime = meta.modified().ok().and_then(|t| {
-        t.duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .map(|d| d.as_secs() as i64)
-    });
+    let mtime = Mtime::from_metadata(meta).unwrap_or(Mtime::ZERO);
     let mode = unix_mode(meta);
     let executable = (mode & 0o111) != 0;
     FileEntry {
         path: rel.to_owned(),
         size: meta.len(),
-        mtime_unix: mtime.unwrap_or(0),
+        mtime,
         executable,
         mode,
     }
@@ -190,14 +229,14 @@ fn unix_mode(_meta: &std::fs::Metadata) -> u32 {
     0
 }
 
-/// Apply POSIX mtime to `path` exactly as recorded in `target_unix`.
+/// Apply POSIX mtime to `path` exactly as recorded in `mtime`.
 ///
-/// No-op when `target_unix` is `0` (treated as "unknown").
-pub fn apply_mtime(path: &Path, target_unix: i64) -> Result<(), SyncError> {
-    if target_unix <= 0 {
+/// No-op when `mtime.is_known()` is false (treated as "unknown").
+pub fn apply_mtime(path: &Path, mtime: Mtime) -> Result<(), SyncError> {
+    if !mtime.is_known() {
         return Ok(());
     }
-    let ft = FileTime::from_unix_time(target_unix, 0);
+    let ft = FileTime::from_unix_time(mtime.secs, mtime.nanos);
     filetime::set_file_mtime(path, ft).map_err(|err| SyncError::Mtime {
         path: path.to_path_buf(),
         message: err.to_string(),
@@ -245,7 +284,7 @@ pub fn diff_entries(
 }
 
 fn signature_changed(a: &FileEntry, b: &FileEntry) -> bool {
-    a.size != b.size || a.mtime_unix != b.mtime_unix || a.mode != b.mode
+    a.size != b.size || a.mtime != b.mtime || a.mode != b.mode
 }
 
 #[cfg(test)]
@@ -277,7 +316,7 @@ mod tests {
         assert_eq!(entries[1].path, "b.txt");
         assert_eq!(entries[2].path, "sub/c.txt");
         assert_eq!(entries[0].size, 5);
-        assert!(entries[0].mtime_unix > 0);
+        assert!(entries[0].mtime.is_known());
     }
 
     #[test]
@@ -297,46 +336,105 @@ mod tests {
     }
 
     #[test]
+    fn walk_dir_propagates_permission_errors() {
+        // When WalkDir fails (e.g. a subdirectory becomes unreadable), the
+        // walker must surface the I/O error rather than silently dropping the
+        // entry — a half-walked tree followed by a sync would delete files
+        // the walker never saw. We simulate by walking a path that does not
+        // exist; metadata() fails immediately with NotADirectory-style error.
+        let tmp = tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist");
+        let err = walk_dir(&missing).unwrap_err();
+        assert!(
+            matches!(err, SyncError::NotADirectory(_) | SyncError::Walk { .. }),
+            "expected NotADirectory or Walk error, got {:?}",
+            err
+        );
+    }
+
+    #[test]
     fn mtime_roundtrip_via_apply_mtime() {
         let tmp = tempdir().unwrap();
         let root = tmp.path();
         let target = write_file(root, "f.txt", b"hello");
-        let original = FileTime::from_unix_time(1_700_000_000, 0);
+        let original = FileTime::from_unix_time(1_700_000_000, 123_456_789);
         filetime::set_file_mtime(&target, original).unwrap();
 
         let entries = walk_dir(root).unwrap();
-        assert_eq!(entries[0].mtime_unix, 1_700_000_000);
+        let captured = entries[0].mtime;
+        assert_eq!(captured.secs, 1_700_000_000);
+        assert_eq!(captured.nanos, 123_456_789);
 
         // Change mtime, walk again, restore via apply_mtime, walk again.
-        let bumped = FileTime::from_unix_time(1_800_000_000, 0);
+        let bumped = FileTime::from_unix_time(1_800_000_000, 987_654_321);
         filetime::set_file_mtime(&target, bumped).unwrap();
         let after_bump = walk_dir(root).unwrap();
-        assert_eq!(after_bump[0].mtime_unix, 1_800_000_000);
+        assert_eq!(after_bump[0].mtime.secs, 1_800_000_000);
+        assert_eq!(after_bump[0].mtime.nanos, 987_654_321);
 
-        apply_mtime(&target, entries[0].mtime_unix).unwrap();
+        apply_mtime(&target, captured).unwrap();
         let restored = walk_dir(root).unwrap();
-        assert_eq!(restored[0].mtime_unix, entries[0].mtime_unix);
+        assert_eq!(restored[0].mtime, captured);
+    }
+
+    #[test]
+    fn mtime_distinguishes_two_writes_within_same_second() {
+        // Two FileEntry records with the same secs but different nanos must be
+        // treated as distinct by the diff engine. This guards against the
+        // pre-fix `.as_secs()` truncation that silently dropped sub-second
+        // edits during fast deploy loops.
+        let a = FileEntry {
+            path: "x".into(),
+            size: 1,
+            mtime: Mtime {
+                secs: 1_700_000_000,
+                nanos: 0,
+            },
+            executable: false,
+            mode: 0o644,
+        };
+        let b = FileEntry {
+            path: "x".into(),
+            size: 1,
+            mtime: Mtime {
+                secs: 1_700_000_000,
+                nanos: 1,
+            },
+            executable: false,
+            mode: 0o644,
+        };
+        assert!(signature_changed(&a, &b));
+    }
+
+    #[test]
+    fn mtime_unknown_is_noop() {
+        let tmp = tempdir().unwrap();
+        let target = write_file(tmp.path(), "noop.txt", b"x");
+        let pre = std::fs::metadata(&target).unwrap().modified().unwrap();
+        apply_mtime(&target, Mtime::ZERO).unwrap();
+        let post = std::fs::metadata(&target).unwrap().modified().unwrap();
+        assert_eq!(pre, post, "apply_mtime(ZERO) must be a no-op");
     }
 
     #[test]
     fn diff_entries_detects_added_removed_modified() {
-        let make = |path: &str, size: u64, mtime: i64| FileEntry {
+        let make = |path: &str, size: u64, secs: i64, nanos: u32| FileEntry {
             path: path.into(),
             size,
-            mtime_unix: mtime,
+            mtime: Mtime { secs, nanos },
             executable: false,
             mode: 0o644,
         };
 
         let source = vec![
-            make("shared.txt", 10, 1000),
-            make("gone.txt", 5, 1100),
-            make("edit.txt", 7, 1200),
+            make("shared.txt", 10, 1000, 0),
+            make("gone.txt", 5, 1100, 0),
+            make("edit.txt", 7, 1200, 0),
         ];
         let target = vec![
-            make("shared.txt", 10, 1000),
-            make("edit.txt", 8, 1201),
-            make("new.txt", 4, 1300),
+            make("shared.txt", 10, 1000, 0),
+            make("edit.txt", 8, 1200, 1),
+            make("new.txt", 4, 1300, 0),
         ];
 
         let (added, removed, modified) = diff_entries(&source, &target);
@@ -347,5 +445,7 @@ mod tests {
         assert_eq!(modified.len(), 1);
         assert_eq!(modified[0].0.path, "edit.txt");
         assert_eq!(modified[0].1.size, 8);
+        // Sub-second diff inside `edit.txt` must register as a modification.
+        assert_eq!(modified[0].1.mtime.nanos, 1);
     }
 }
