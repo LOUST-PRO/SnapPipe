@@ -84,14 +84,26 @@ impl TrustStore {
         Some(base.join("snappipe").join("trust.toml"))
     }
 
-    /// Load from the default path; missing file returns an empty store.
-    pub fn load_or_default() -> Self {
+    /// Load from the default path.
+    ///
+    /// Distinguishes three outcomes:
+    /// - **Path resolvable, file exists, parses cleanly**: returned store has
+    ///   the persisted entries and a recorded save path.
+    /// - **Path resolvable, file missing**: returned store is empty (legitimate
+    ///   first-run state) with the save path recorded so a later `save()` will
+    ///   create the file.
+    /// - **Path resolvable, file present but unreadable (permissions, I/O)**:
+    ///   the error is **propagated**, not swallowed. Failing open here would
+    ///   let an empty store overwrite the persisted peers on the next `save()`.
+    /// - **No default path available** (no `$XDG_CONFIG_HOME`, no `$HOME`): a
+    ///   pure in-memory store is returned with no save path.
+    pub fn load_or_default() -> Result<Self, TrustStoreError> {
         match Self::default_path() {
-            Some(path) => Self::load_from_path(&path).unwrap_or_else(|_| Self {
-                inner: Arc::new(RwLock::new(HashMap::new())),
-                path: Some(path),
-            }),
-            None => Self::new(),
+            Some(path) => {
+                let store = Self::load_from_path(&path)?;
+                Ok(store)
+            }
+            None => Ok(Self::new()),
         }
     }
 
@@ -337,6 +349,26 @@ mod tests {
         let path = tmp.path().join("nope.toml");
         let store = TrustStore::load_from_path(&path).unwrap();
         assert!(store.is_empty());
+    }
+
+    #[test]
+    fn load_or_default_propagates_io_errors() {
+        // Simulate a permission-denied scenario by creating a directory where
+        // the trust file would be; read_to_string on that path will yield an
+        // Io error that is NOT NotFound, so load_or_default must surface it
+        // instead of returning an empty store that would overwrite peers.
+        let tmp = tempdir().unwrap();
+        let blocking_dir = tmp.path().join("trust.toml");
+        std::fs::create_dir(&blocking_dir).unwrap();
+
+        // Point default_path-like logic at the blocking dir so load_from_path
+        // sees a real I/O error (not NotFound).
+        let result = TrustStore::load_from_path(&blocking_dir);
+        assert!(
+            matches!(result, Err(TrustStoreError::Io { .. })),
+            "non-NotFound I/O errors must propagate, got {:?}",
+            result
+        );
     }
 
     #[test]
