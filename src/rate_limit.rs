@@ -167,9 +167,14 @@ impl RateLimiter {
             per_min
         };
         let mut guard = self.inner.lock().expect("rate limiter poisoned");
+        // When the bucket is created lazily here, seed it at the NEW
+        // capacity (effective), not the limiter default — otherwise the
+        // operator's intent of "this node gets N req/min" is silently
+        // capped to the default. Existing buckets are retuned in place so
+        // the in-flight token count is preserved.
         let bucket = guard
             .entry(node_id.clone())
-            .or_insert_with(|| TokenBucket::full(self.default_per_min, now_unix));
+            .or_insert_with(|| TokenBucket::full(effective, now_unix));
         bucket.retune(effective, now_unix);
     }
 
