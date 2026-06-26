@@ -12,9 +12,15 @@
 //! optimized for low-contention paths (one handshake per accepted connection);
 //! for higher fan-out the cleanup pass should be called periodically rather
 //! than on the hot path.
+//!
+//! Metrics: lock-free `AtomicU64` counters track check/accept/replay
+//! outcomes. [`NonceStore::metrics`] returns a snapshot. Operators watch
+//! the throughput counters to detect the v0.3.0 migration trigger documented
+//! in `docs/SECURITY-MODEL.md` (sustained `>100 handshakes/sec` per edge).
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use thiserror::Error;
 
@@ -27,11 +33,42 @@ pub enum NonceError {
     MalformedLine(String),
 }
 
+/// Lock-free snapshot of [`NonceStore`] traffic counters.
+///
+/// Read via [`NonceStore::metrics`]. The counters are monotonic `AtomicU64`
+/// so they wrap cleanly at `u64::MAX` (effectively never for any practical
+/// deployment). Operators compare consecutive snapshots to derive rates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct NonceStoreMetrics {
+    pub total_check_calls: u64,
+    pub total_accepted: u64,
+    pub total_rejected_replay: u64,
+    pub total_accepted_after_ttl: u64,
+    pub current_size: usize,
+}
+
+impl NonceStoreMetrics {
+    /// Counters excluding `current_size`, suitable for diffing across two
+    /// snapshots to derive per-window deltas.
+    pub fn counters(&self) -> (u64, u64, u64, u64) {
+        (
+            self.total_check_calls,
+            self.total_accepted,
+            self.total_rejected_replay,
+            self.total_accepted_after_ttl,
+        )
+    }
+}
+
 /// Thread-safe, in-memory replay-protection store for 16-byte nonces.
 #[derive(Debug, Clone)]
 pub struct NonceStore {
     inner: Arc<Mutex<HashMap<[u8; 16], i64>>>,
     ttl_secs: i64,
+    total_check_calls: Arc<AtomicU64>,
+    total_accepted: Arc<AtomicU64>,
+    total_rejected_replay: Arc<AtomicU64>,
+    total_accepted_after_ttl: Arc<AtomicU64>,
 }
 
 impl NonceStore {
@@ -42,6 +79,10 @@ impl NonceStore {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             ttl_secs: ttl,
+            total_check_calls: Arc::new(AtomicU64::new(0)),
+            total_accepted: Arc::new(AtomicU64::new(0)),
+            total_rejected_replay: Arc::new(AtomicU64::new(0)),
+            total_accepted_after_ttl: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -75,14 +116,36 @@ impl NonceStore {
     /// (accept), `Ok(false)` on replay (reject), `Err(_)` only on internal
     /// invariants being violated.
     pub fn check_and_record(&self, nonce: &[u8; 16], now_unix: i64) -> Result<bool, NonceError> {
+        self.total_check_calls.fetch_add(1, Ordering::Relaxed);
         let mut guard = self.inner.lock().expect("nonce store poisoned");
         if let Some(prior) = guard.get(nonce).copied()
             && now_unix.saturating_sub(prior) < self.ttl_secs
         {
+            self.total_rejected_replay.fetch_add(1, Ordering::Relaxed);
             return Ok(false);
+        }
+        // Past-TTL entries are also accepted, but tracked separately so
+        // operators can distinguish "fresh nonce, first sighting" from
+        // "replay attempt after TTL expiry".
+        if guard.contains_key(nonce) {
+            self.total_accepted_after_ttl
+                .fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.total_accepted.fetch_add(1, Ordering::Relaxed);
         }
         guard.insert(*nonce, now_unix);
         Ok(true)
+    }
+
+    /// Lock-free snapshot of traffic counters and current size.
+    pub fn metrics(&self) -> NonceStoreMetrics {
+        NonceStoreMetrics {
+            total_check_calls: self.total_check_calls.load(Ordering::Relaxed),
+            total_accepted: self.total_accepted.load(Ordering::Relaxed),
+            total_rejected_replay: self.total_rejected_replay.load(Ordering::Relaxed),
+            total_accepted_after_ttl: self.total_accepted_after_ttl.load(Ordering::Relaxed),
+            current_size: self.len(),
+        }
     }
 
     /// Remove every nonce whose recorded timestamp is older than
@@ -306,5 +369,56 @@ mod tests {
         }
         // Exactly one of the 10 concurrent attempts must succeed.
         assert_eq!(accepted, 1, "exactly one acceptance expected");
+    }
+
+    #[test]
+    fn metrics_track_check_accept_replay_outcomes() {
+        let store = NonceStore::new(60);
+        let n1 = fixed(1);
+        let n2 = fixed(2);
+
+        // 2 first-sighting accepts.
+        assert!(store.check_and_record(&n1, 1_000).unwrap());
+        assert!(store.check_and_record(&n2, 1_010).unwrap());
+
+        // 2 replay rejects.
+        assert!(!store.check_and_record(&n1, 1_020).unwrap());
+        assert!(!store.check_and_record(&n2, 1_030).unwrap());
+
+        // After TTL expires, the same nonce is accepted again and tracked as
+        // accepted_after_ttl (not as fresh accepted).
+        assert!(store.check_and_record(&n1, 1_090).unwrap());
+
+        let m = store.metrics();
+        assert_eq!(m.total_check_calls, 5);
+        assert_eq!(m.total_accepted, 2);
+        assert_eq!(m.total_rejected_replay, 2);
+        assert_eq!(m.total_accepted_after_ttl, 1);
+        assert_eq!(m.current_size, 2);
+    }
+
+    #[test]
+    fn metrics_are_lock_free_under_concurrent_load() {
+        // Spawn N tasks, each calling check_and_record with its own nonce.
+        // After join, total_check_calls must equal N exactly. AtomicU64 with
+        // Relaxed ordering is sufficient because the metric is observational,
+        // not load-bearing for correctness.
+        let store = Arc::new(NonceStore::new(60));
+        let mut handles = Vec::new();
+        for i in 0u8..50 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                store.check_and_record(&fixed(i), 1_700_000_000).unwrap();
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let m = store.metrics();
+        assert_eq!(m.total_check_calls, 50);
+        assert_eq!(m.total_accepted, 50);
+        assert_eq!(m.total_rejected_replay, 0);
+        assert_eq!(m.total_accepted_after_ttl, 0);
+        assert_eq!(m.current_size, 50);
     }
 }

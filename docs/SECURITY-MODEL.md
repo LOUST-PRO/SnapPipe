@@ -29,6 +29,7 @@ auditing the transport layer before deploying SnapPipe in production.
 | Sync mtime precision | ✅ | `Mtime { secs, nanos }`, subsecond diffs preserved |
 | Sync walkdir errors | ✅ | Permission/IO errors propagate, not silently dropped |
 | RateLimit `set_limit(0)` clamp | ✅ | Zero clamped to `DEFAULT_RATE_PER_MIN` |
+| NonceStore + RateLimiter metrics | ✅ | Lock-free `AtomicU64` counters; in-code migration trigger for v0.3.0 |
 | ALPN source-of-truth | ✅ | Both client and server derive from `DEFAULT_ALPN` constant |
 | CI actions SHA pinned | ✅ | `actions/checkout@v4.2.2`, `actions/cache@v4.2.1`, `dtolnay/rust-toolchain@stable` |
 | CI `persist-credentials: false` | ✅ | Leaked runner cannot pivot via post-action token file |
@@ -61,6 +62,21 @@ below the Mutex contention knee.
 - A sharded nonce store (16 shards keyed by `nonce[0]`) for `NonceStore`
 - A bounded `parking_lot::Mutex` (no poison handling, faster uncontended
   path) if profiling shows `std::sync::Mutex::lock()` itself is hot.
+
+**In-code observability (v0.2.1)**. Both stores expose lock-free metrics
+snapshots:
+
+- `NonceStore::metrics() -> NonceStoreMetrics { total_check_calls,
+  total_accepted, total_rejected_replay, total_accepted_after_ttl,
+  current_size }`
+- `RateLimiter::metrics() -> RateLimiterMetrics { total_try_consume_calls,
+  total_allowed, total_denied, total_set_limit_calls, tracked_nodes }`
+
+Operators diff two consecutive snapshots taken at a known interval
+(e.g. every 1 second). A `total_try_consume_calls` delta exceeding 100
+in any 1-second window is the migration trigger. The metrics use
+`AtomicU64::fetch_add` with `Ordering::Relaxed`, so they add zero
+contention on the hot path.
 
 **Why documented, not fixed now**: dashmap adds ~300 KB to the binary and
 ~250 LOC of refactor across `nonce_store.rs`, `rate_limit.rs`, and their
