@@ -149,7 +149,7 @@ cargo test
 
 ## QUIC notes
 
-The repository now includes Quinn-based transport profiles in `src/quic.rs` for:
+The repository now includes Quinn-based transport profiles in `src/quic/` (mod.rs + endpoint.rs) for:
 
 - low-latency interactive sessions
 - relay/backhaul-oriented sessions
