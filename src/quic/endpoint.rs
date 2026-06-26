@@ -19,6 +19,13 @@ use thiserror::Error;
 use super::{QuicProfileError, QuicTransportProfile};
 use crate::DEFAULT_ALPN;
 
+/// Default ALPN byte sequence advertised by both client and server configs.
+/// Sourced from [`crate::DEFAULT_ALPN`] so the wire protocol identifier lives
+/// in exactly one place — the lib.rs constant.
+fn default_alpn_bytes() -> Vec<u8> {
+    DEFAULT_ALPN.as_bytes().to_vec()
+}
+
 /// Default SAN list used by the dev self-signed cert generator.
 pub const DEFAULT_DEV_SAN: &str = "localhost";
 
@@ -126,7 +133,7 @@ fn rustls_server_config(
             dev_cert.private_key.clone_key(),
         )
         .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?;
-    server_crypto.alpn_protocols = vec![b"/snappipe/0".to_vec()];
+    server_crypto.alpn_protocols = vec![default_alpn_bytes()];
     Ok(Arc::new(server_crypto))
 }
 
@@ -150,7 +157,7 @@ fn rustls_client_config(
         .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?
         .with_root_certificates(roots)
         .with_no_client_auth();
-    client_crypto.alpn_protocols = vec![b"/snappipe/0".to_vec()];
+    client_crypto.alpn_protocols = vec![default_alpn_bytes()];
     Ok(Arc::new(client_crypto))
 }
 
@@ -225,6 +232,15 @@ mod tests {
             .map(|bytes| String::from_utf8_lossy(bytes).to_string())
             .collect();
         assert_eq!(alpn, vec![DEFAULT_ALPN.to_string()]);
+        // Wire-format must match DEFAULT_ALPN exactly. If the lib.rs
+        // constant ever changes, this assertion is the safety net that the
+        // wire identifier stays in sync with the documented constant.
+        assert_eq!(server_cfg.alpn_protocols.len(), 1);
+        assert_eq!(
+            server_cfg.alpn_protocols[0],
+            DEFAULT_ALPN.as_bytes(),
+            "ALPN wire bytes must equal DEFAULT_ALPN exactly"
+        );
     }
 
     #[test]
@@ -237,6 +253,23 @@ mod tests {
             .map(|bytes| String::from_utf8_lossy(bytes).to_string())
             .collect();
         assert_eq!(alpn, vec![DEFAULT_ALPN.to_string()]);
+        assert_eq!(client_cfg.alpn_protocols.len(), 1);
+        assert_eq!(
+            client_cfg.alpn_protocols[0],
+            DEFAULT_ALPN.as_bytes(),
+            "ALPN wire bytes must equal DEFAULT_ALPN exactly"
+        );
+    }
+
+    #[test]
+    fn client_and_server_alpn_match() {
+        // A client talking to a server with mismatched ALPN would see the
+        // handshake fail with NO_APPLICATION_PROTOCOL — guard against the
+        // two configs diverging by asserting equality end-to-end.
+        let cert = self_signed_dev_cert(&[]).unwrap();
+        let server_cfg = rustls_server_config(&cert).unwrap();
+        let client_cfg = rustls_client_config(&cert).unwrap();
+        assert_eq!(server_cfg.alpn_protocols, client_cfg.alpn_protocols);
     }
 
     #[tokio::test]
