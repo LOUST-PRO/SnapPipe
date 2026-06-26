@@ -11,8 +11,14 @@
 //! - Bursts up to `capacity` are allowed after a quiet period.
 //! - Time is supplied by the caller (`now_unix` seconds, fractional allowed)
 //!   to keep tests deterministic.
+//!
+//! Metrics: lock-free `AtomicU64` counters track consume/allow/deny outcomes.
+//! [`RateLimiter::metrics`] returns a snapshot. Operators diff consecutive
+//! snapshots to derive throughput; sustained `>100 handshakes/sec` per edge
+//! is the v0.3.0 migration trigger documented in `docs/SECURITY-MODEL.md`.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::NodeId;
@@ -76,11 +82,31 @@ impl TokenBucket {
     }
 }
 
+/// Lock-free snapshot of [`RateLimiter`] traffic counters.
+///
+/// Read via [`RateLimiter::metrics`]. Operators diff two consecutive
+/// snapshots to derive per-window throughput; sustained
+/// `>100 handshakes/sec` (delta between snapshots over a 1-second window)
+/// activates the v0.3.0 migration trigger documented in
+/// `docs/SECURITY-MODEL.md`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RateLimiterMetrics {
+    pub total_try_consume_calls: u64,
+    pub total_allowed: u64,
+    pub total_denied: u64,
+    pub total_set_limit_calls: u64,
+    pub tracked_nodes: usize,
+}
+
 /// Thread-safe, per-node rate limiter.
 #[derive(Debug, Clone)]
 pub struct RateLimiter {
     inner: Arc<Mutex<HashMap<NodeId, TokenBucket>>>,
     default_per_min: u32,
+    total_try_consume_calls: Arc<AtomicU64>,
+    total_allowed: Arc<AtomicU64>,
+    total_denied: Arc<AtomicU64>,
+    total_set_limit_calls: Arc<AtomicU64>,
 }
 
 impl RateLimiter {
@@ -95,6 +121,10 @@ impl RateLimiter {
         Self {
             inner: Arc::new(Mutex::new(HashMap::new())),
             default_per_min: default,
+            total_try_consume_calls: Arc::new(AtomicU64::new(0)),
+            total_allowed: Arc::new(AtomicU64::new(0)),
+            total_denied: Arc::new(AtomicU64::new(0)),
+            total_set_limit_calls: Arc::new(AtomicU64::new(0)),
         }
     }
 
@@ -111,11 +141,18 @@ impl RateLimiter {
     /// Try to consume one token for `node_id` at `now_unix`. The bucket is
     /// lazily initialized on first call.
     pub fn try_consume(&self, node_id: &NodeId, now_unix: f64) -> bool {
+        self.total_try_consume_calls.fetch_add(1, Ordering::Relaxed);
         let mut guard = self.inner.lock().expect("rate limiter poisoned");
         let bucket = guard
             .entry(node_id.clone())
             .or_insert_with(|| TokenBucket::full(self.default_per_min, now_unix));
-        bucket.try_consume(now_unix)
+        let allowed = bucket.try_consume(now_unix);
+        if allowed {
+            self.total_allowed.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.total_denied.fetch_add(1, Ordering::Relaxed);
+        }
+        allowed
     }
 
     /// Override the per-minute budget for a single node.
@@ -123,6 +160,7 @@ impl RateLimiter {
     /// `per_min == 0` is clamped to [`DEFAULT_RATE_PER_MIN`] so a misconfigured
     /// trust entry cannot silently disable rate limiting for an issuer.
     pub fn set_limit(&self, node_id: &NodeId, per_min: u32, now_unix: f64) {
+        self.total_set_limit_calls.fetch_add(1, Ordering::Relaxed);
         let effective = if per_min == 0 {
             DEFAULT_RATE_PER_MIN
         } else {
@@ -142,6 +180,22 @@ impl RateLimiter {
             .expect("rate limiter poisoned")
             .get(node_id)
             .copied()
+    }
+
+    /// Lock-free snapshot of traffic counters and current node count.
+    ///
+    /// Operators should diff two consecutive snapshots taken at a known
+    /// interval (e.g. 1 second) to derive throughput. A
+    /// `total_try_consume_calls` delta exceeding 100 in a 1-second window is
+    /// the v0.3.0 migration trigger documented in `docs/SECURITY-MODEL.md`.
+    pub fn metrics(&self) -> RateLimiterMetrics {
+        RateLimiterMetrics {
+            total_try_consume_calls: self.total_try_consume_calls.load(Ordering::Relaxed),
+            total_allowed: self.total_allowed.load(Ordering::Relaxed),
+            total_denied: self.total_denied.load(Ordering::Relaxed),
+            total_set_limit_calls: self.total_set_limit_calls.load(Ordering::Relaxed),
+            tracked_nodes: self.tracked_nodes(),
+        }
     }
 }
 
@@ -246,5 +300,50 @@ mod tests {
         let snap = limiter.snapshot(&node).expect("tracked");
         assert_eq!(snap.capacity, DEFAULT_RATE_PER_MIN as f64);
         assert_eq!(snap.refill_per_sec, DEFAULT_RATE_PER_MIN as f64 / 60.0);
+    }
+
+    #[test]
+    fn metrics_track_try_consume_allow_deny_outcomes() {
+        let limiter = RateLimiter::new(5); // 5 req/min
+        let node = node_a();
+
+        // 5 allows + 2 denies in immediate succession.
+        for _ in 0..5 {
+            assert!(limiter.try_consume(&node, 1_000.0));
+        }
+        assert!(!limiter.try_consume(&node, 1_000.0));
+        assert!(!limiter.try_consume(&node, 1_000.0));
+
+        limiter.set_limit(&node, 0, 1_000.0); // counts as a set_limit call
+
+        let m = limiter.metrics();
+        assert_eq!(m.total_try_consume_calls, 7);
+        assert_eq!(m.total_allowed, 5);
+        assert_eq!(m.total_denied, 2);
+        assert_eq!(m.total_set_limit_calls, 1);
+        assert_eq!(m.tracked_nodes, 1);
+    }
+
+    #[test]
+    fn metrics_are_lock_free_under_concurrent_load() {
+        // 50 threads each calling try_consume on their own node. After join,
+        // counters must reflect exactly 50 calls. AtomicU64 with Relaxed
+        // ordering is sufficient because metrics are observational.
+        let limiter = Arc::new(RateLimiter::new(1_000));
+        let mut handles = Vec::new();
+        for _ in 0..50 {
+            let limiter = Arc::clone(&limiter);
+            let node = node_a();
+            handles.push(std::thread::spawn(move || {
+                limiter.try_consume(&node, 1_700_000_000.0);
+            }));
+        }
+        for h in handles {
+            h.join().unwrap();
+        }
+        let m = limiter.metrics();
+        assert_eq!(m.total_try_consume_calls, 50);
+        assert_eq!(m.total_allowed + m.total_denied, 50);
+        assert_eq!(m.total_set_limit_calls, 0);
     }
 }
