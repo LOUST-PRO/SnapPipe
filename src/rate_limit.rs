@@ -119,12 +119,20 @@ impl RateLimiter {
     }
 
     /// Override the per-minute budget for a single node.
+    ///
+    /// `per_min == 0` is clamped to [`DEFAULT_RATE_PER_MIN`] so a misconfigured
+    /// trust entry cannot silently disable rate limiting for an issuer.
     pub fn set_limit(&self, node_id: &NodeId, per_min: u32, now_unix: f64) {
+        let effective = if per_min == 0 {
+            DEFAULT_RATE_PER_MIN
+        } else {
+            per_min
+        };
         let mut guard = self.inner.lock().expect("rate limiter poisoned");
         let bucket = guard
             .entry(node_id.clone())
             .or_insert_with(|| TokenBucket::full(self.default_per_min, now_unix));
-        bucket.retune(per_min, now_unix);
+        bucket.retune(effective, now_unix);
     }
 
     /// Read-only snapshot of a node's bucket (returns `None` if untracked).
@@ -226,5 +234,17 @@ mod tests {
     fn zero_default_clamps_to_fallback() {
         let limiter = RateLimiter::new(0);
         assert_eq!(limiter.default_per_min(), DEFAULT_RATE_PER_MIN);
+    }
+
+    #[test]
+    fn set_limit_zero_clamps_to_fallback() {
+        // Per-node override of 0 must be clamped, not silently disabled.
+        let limiter = RateLimiter::new(60);
+        let node = node_a();
+
+        limiter.set_limit(&node, 0, 1_000.0);
+        let snap = limiter.snapshot(&node).expect("tracked");
+        assert_eq!(snap.capacity, DEFAULT_RATE_PER_MIN as f64);
+        assert_eq!(snap.refill_per_sec, DEFAULT_RATE_PER_MIN as f64 / 60.0);
     }
 }
