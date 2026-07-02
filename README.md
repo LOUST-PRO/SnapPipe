@@ -19,37 +19,78 @@ SnapPipe aims to provide a cleaner fallback layer:
 - keep the operator in control of relay infrastructure
 - keep the software stack open and inspectable
 
-## Current scope (v0.1.0)
+## Current scope (v0.2.1)
 
-This repository already implements the **security/control-plane foundation**:
+This repository implements the **security / control-plane foundation**, hardened
+through the audit-driven batch summarised in [`RELEASES.md`](RELEASES.md):
 
 - Ed25519 identity generation
-- stable node IDs derived from public keys
+- stable NodeIds derived from public keys
 - signed session tickets with explicit issuer and subject identities
-- offline ticket verification
+- offline ticket verification, including cross-issuer rejection
 - Quinn-based QUIC transport profiles for low-latency and relay-oriented tuning
+- **identity-gated handshake**: `TrustStore` + `SignedTicket` gating before any peer
+  is accepted (`NonNullIssuer` — empty trust store is NOT a default-allow state)
+- **replay protection**: bounded `NonceStore` with TTL-bounded accepted-after-expiry
+  classification
+- **rate limiting**: per-NodeId token bucket with `set_limit` overrides from the
+  trust store
+- **ALPN source-of-truth**: client and server both derive from the `DEFAULT_ALPN`
+  constant; mismatch fails the handshake cleanly
+- **sub-second mtime** in the sync plane (`Mtime { secs, nanos }`); preserves
+  intent on rapid successive writes
+- **lock-free v0.3.0 trigger metrics** on `NonceStore` and `RateLimiter`
+  (`AtomicU64` with `Ordering::Relaxed`) — see
+  [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) for the migration trigger
+- **CI hardening**: SHA-pinned GitHub Actions, `persist-credentials: false`,
+  `concurrency.cancel-in-progress`, explicit `permissions: contents: read`,
+  `cargo test --locked`
+- **disclosure channel**: see [`SECURITY.md`](SECURITY.md)
 - sample relay configuration scaffold
 - CLI for issuing / inspecting / verifying tickets
 
-This is intentionally the **first serious layer**, not a fake “we solved everything” release.
-
 ## Architecture
 
-Detailed system notes live in `ARCHITECTURE.md`.
+Detailed system notes live in [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md)
+(threat model + hardening posture table + deferred-work rationale) and in
+[`docs/OPERATIONAL-DEPLOYMENT.md`](docs/OPERATIONAL-DEPLOYMENT.md) (where
+SnapPipe sits in the laptop ↔ VPS flow).
 
 ```mermaid
 graph LR
    Identity[Identity Keys]
    Ticket[Signed Ticket]
+   Trust[TrustStore]
+   Nonce[NonceStore]
+   Rate[RateLimiter]
    Quinn[Quinn QUIC Profile]
    Relay[Self-hosted Relay]
    Session[Session Data Path]
 
    Identity --> Ticket
+   Trust --> Ticket
    Ticket --> Quinn
+   Nonce --> Quinn
+   Rate --> Quinn
    Quinn --> Relay
    Quinn --> Session
 ```
+
+## Releases
+
+| Version | Tag | Highlights |
+|---|---|---|
+| **v0.2.1** (current) | [`v0.2.1`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.2.1) | Hardening batch — see [`RELEASES.md`](RELEASES.md) and [`CHANGELOG.md`](CHANGELOG.md) |
+| v0.1.0 | [`v0.1.0`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.1.0) | Initial release — identity + tickets + QUIC profiles + CLI |
+
+SnapPipe is also published to crates.io under the `snappipe` crate name:
+
+```bash
+cargo add snappipe
+```
+
+The published crate metadata mirrors the `v0.2.1` git tag exactly
+(Cargo.toml `version`, repository, license, keywords, categories).
 
 ## Why the name SnapPipe
 
@@ -61,21 +102,23 @@ And a second quality of the design is more personal / philosophical:
 
 ## Roadmap direction
 
-Planned follow-up layers:
+The v0.2.1 hardening batch closed the audit-driven items on the previous roadmap.
+Items remaining:
 
-1. **QUIC transport core**
-   - foundation now modeled via `quinn` transport profiles
-   - unreliable / low-latency data path friendly to rollback-style traffic
-
-2. **Identity-gated relay service**
-   - self-hosted operator relay
-   - ticket-authenticated entry point
-   - metrics / health surface controlled by the operator
-
-3. **NAT traversal / path agility**
+1. **NAT traversal / path agility** *(in progress)*
    - rebinding resilience
-   - better behavior on Wi-Fi ↔ 5G transitions
-   - direct path first, relay second, but without collapsing into a paid managed control plane
+   - better behaviour on Wi-Fi ↔ 5G transitions
+   - direct path first, relay second, but without collapsing into a paid managed
+     control plane
+
+2. **v0.3.0 trigger-driven migration** *(deferred until metrics cross the threshold)*
+   - `dashmap::DashMap<NodeId, TokenBucket>` for `RateLimiter`
+   - A sharded `NonceStore` (16 shards keyed by `nonce[0]`)
+   - Bounded `parking_lot::Mutex` if `std::sync::Mutex::lock()` itself is hot
+
+   The trigger is `>100 try_consume_calls / sec` per edge, measured via the
+   in-code metrics in PR #9. See [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md)
+   for the full rationale.
 
 ## CLI
 
@@ -147,14 +190,32 @@ This is not a full relay implementation yet; it is the operator-facing contract 
 cargo test
 ```
 
+The full test surface (`cargo test --locked`) currently runs **63 tests**
+across the library, the integration test in `tests/integration_trust_sync.rs`,
+and the end-to-end QUIC tests in `tests/quic_e2e.rs`. The CI workflow pins
+the exact action SHAs and uses `cargo test --locked` so `Cargo.lock` is the
+source of truth.
+
 ## QUIC notes
 
-The repository now includes Quinn-based transport profiles in `src/quic/` (mod.rs + endpoint.rs) for:
+The repository includes Quinn-based transport profiles in `src/quic/`
+(mod.rs + endpoint.rs) for:
 
 - low-latency interactive sessions
 - relay/backhaul-oriented sessions
 
-This is a transport-configuration foundation, not a claim that the full runtime/session orchestrator is finished.
+Both client and server endpoints derive the ALPN from the `DEFAULT_ALPN`
+constant via the `default_alpn_bytes()` helper. Mismatched ALPN values fail
+the handshake cleanly instead of silently progressing to a degraded state.
+
+## Security
+
+- See [`SECURITY.md`](SECURITY.md) for the disclosure process.
+- See [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) for the threat model,
+  hardening posture table, and deferred-work rationale.
+
+The disclosure channel is `opensource@loust.pro` with a 48-hour
+acknowledgment SLA; coordinated 90-day disclosure is preferred.
 
 ## Contribution flow
 
