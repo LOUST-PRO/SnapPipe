@@ -18,6 +18,7 @@
 //! the throughput counters to detect the v0.3.0 migration trigger documented
 //! in `docs/SECURITY-MODEL.md` (sustained `>100 handshakes/sec` per edge).
 
+use serde::Serialize;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -38,7 +39,7 @@ pub enum NonceError {
 /// Read via [`NonceStore::metrics`]. The counters are monotonic `AtomicU64`
 /// so they wrap cleanly at `u64::MAX` (effectively never for any practical
 /// deployment). Operators compare consecutive snapshots to derive rates.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct NonceStoreMetrics {
     pub total_check_calls: u64,
     pub total_accepted: u64,

@@ -1,9 +1,14 @@
 use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
+use serde::Serialize;
 use snappipe::{
-    DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS, RelayConfig, SignedTicket, decode_public_key,
+    DEFAULT_ALPN, DEFAULT_TICKET_TTL_SECS, NodeId, RelayConfig, SignedTicket, decode_public_key,
     decode_secret_key, encode_public_key, encode_secret_key, generate_signing_key, issue_ticket,
-    now_unix_seconds, quic::QuicTransportProfile, to_pretty_json, verify_ticket,
+    nonce_store::{NonceStore, NonceStoreMetrics},
+    now_unix_seconds,
+    quic::QuicTransportProfile,
+    rate_limit::{RateLimiter, RateLimiterMetrics},
+    to_pretty_json, verify_ticket,
 };
 use std::fs;
 use std::path::PathBuf;
@@ -31,6 +36,7 @@ enum Command {
         #[command(subcommand)]
         command: QuicCommand,
     },
+    Metrics(MetricsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -106,6 +112,24 @@ struct QuicProfileArgs {
     output: Option<PathBuf>,
 }
 
+/// Arguments for the `metrics` subcommand.
+///
+/// Runs a small reproducible workload against fresh `NonceStore` and
+/// `RateLimiter` instances, then prints both metric snapshots as a single
+/// JSON document. Use it as a smoke test, as a live reference of the
+/// metrics schema, and as the input shape for operators diffing two
+/// consecutive snapshots to derive throughput (the v0.3.0 migration
+/// trigger is documented in `docs/SECURITY-MODEL.md`).
+#[derive(Args, Debug)]
+struct MetricsArgs {
+    /// TTL (seconds) used for the demo `NonceStore`.
+    #[arg(long, default_value_t = 60)]
+    nonce_ttl_secs: i64,
+    /// Default per-minute budget for the demo `RateLimiter`.
+    #[arg(long, default_value_t = 100)]
+    rate_default_per_min: u32,
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
@@ -121,6 +145,7 @@ fn main() -> Result<()> {
         Command::Quic { command } => match command {
             QuicCommand::Profile(args) => quic_profile(args),
         },
+        Command::Metrics(args) => metrics_cmd(args),
     }
 }
 
@@ -235,4 +260,76 @@ fn load_ticket(path: &PathBuf) -> Result<SignedTicket> {
     let ticket = serde_json::from_str::<SignedTicket>(raw.trim())
         .with_context(|| format!("failed to parse {} as SignedTicket JSON", path.display()))?;
     Ok(ticket)
+}
+
+/// JSON-serialisable bundle of metrics from both hot-path stores plus
+/// the v0.3.0 migration-trigger reminder.
+///
+/// Operators diff two consecutive snapshots over a known interval to
+/// derive throughput; a `try_consume_calls` delta exceeding 100 in a
+/// 1-second window is the migration trigger documented in
+/// `docs/SECURITY-MODEL.md`.
+#[derive(Debug, Serialize)]
+struct MetricsSnapshot {
+    nonce_store: NonceStoreMetrics,
+    rate_limiter: RateLimiterMetrics,
+    v0_3_0_trigger: V03Trigger,
+}
+
+#[derive(Debug, Serialize)]
+struct V03Trigger {
+    description: &'static str,
+    note: &'static str,
+}
+
+fn metrics_cmd(args: MetricsArgs) -> Result<()> {
+    // Reproducible workload on fresh stores. The numbers below are small
+    // enough to fit comfortably in a single bucket but exercise every
+    // counter so the JSON output is non-trivial.
+    let nonce_store = NonceStore::new(args.nonce_ttl_secs);
+    let rate_limiter = RateLimiter::new(args.rate_default_per_min);
+
+    // 50 fresh nonces -> all accepted.
+    for i in 0u8..50 {
+        let mut nonce = [0u8; 16];
+        nonce[0] = i;
+        nonce_store.check_and_record(&nonce, 1_700_000_000).ok();
+    }
+    // 30 replays -> all rejected as replays within the TTL window.
+    for i in 0u8..30 {
+        let mut nonce = [0u8; 16];
+        nonce[0] = i;
+        nonce_store.check_and_record(&nonce, 1_700_000_010).ok();
+    }
+
+    // 20 rate-limit allows + 5 denies on a node with a 25/min budget.
+    let rate_node = NodeId::from_verifying_key(&generate_signing_key().verifying_key());
+    rate_limiter.set_limit(&rate_node, 25, 1_700_000_000.0);
+    for _ in 0..25 {
+        rate_limiter.try_consume(&rate_node, 1_700_000_000.0);
+    }
+    // 5 of those 25 succeed; force 5 more attempts at the same instant so
+    // they all deny (bucket is empty and no time has elapsed).
+    for _ in 0..5 {
+        rate_limiter.try_consume(&rate_node, 1_700_000_000.0);
+    }
+
+    // Touch a second node so `tracked_nodes` reflects >1, then drain it.
+    let second_node = NodeId::from_verifying_key(&generate_signing_key().verifying_key());
+    for _ in 0..3 {
+        rate_limiter.try_consume(&second_node, 1_700_000_000.0);
+    }
+
+    let snapshot = MetricsSnapshot {
+        nonce_store: nonce_store.metrics(),
+        rate_limiter: rate_limiter.metrics(),
+        v0_3_0_trigger: V03Trigger {
+            description: "Sustained >100 try_consume_calls / sec per edge triggers \
+                migration to sharded RateLimiter/NonceStore. See docs/SECURITY-MODEL.md.",
+            note: "Single snapshot only — diff two consecutive snapshots over a \
+                known interval to derive throughput.",
+        },
+    };
+    println!("{}", to_pretty_json(&snapshot)?);
+    Ok(())
 }

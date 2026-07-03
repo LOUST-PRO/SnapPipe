@@ -22,6 +22,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::NodeId;
+use serde::Serialize;
 
 /// Default per-node rate when the trust store has no override (req/min).
 pub const DEFAULT_RATE_PER_MIN: u32 = 100;
@@ -89,7 +90,7 @@ impl TokenBucket {
 /// `>100 handshakes/sec` (delta between snapshots over a 1-second window)
 /// activates the v0.3.0 migration trigger documented in
 /// `docs/SECURITY-MODEL.md`.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 pub struct RateLimiterMetrics {
     pub total_try_consume_calls: u64,
     pub total_allowed: u64,
