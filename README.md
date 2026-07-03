@@ -1,5 +1,10 @@
 # SnapPipe
 
+[![crates.io](https://img.shields.io/crates/v/snappipe.svg)](https://crates.io/crates/snappipe)
+[![CI](https://github.com/LOUST-PRO/SnapPipe/actions/workflows/ci.yml/badge.svg)](https://github.com/LOUST-PRO/SnapPipe/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/snappipe.svg)](LICENSE-APACHE)
+[![Downloads](https://img.shields.io/crates/d/snappipe.svg)](https://crates.io/crates/snappipe)
+
 Identity-based transport toolkit for self-hosted, low-latency peer connectivity.
 
 SnapPipe is meant to move the fallback story away from location-based addressing (`ip:port`) and toward **identity-based networking**:
