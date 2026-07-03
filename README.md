@@ -176,6 +176,20 @@ cargo run -- quic profile \
    --output quic.profile.json
 ```
 
+### Print lock-free metrics (JSON)
+
+```bash
+cargo run -- metrics
+```
+
+Drives a small reproducible workload against fresh `NonceStore` and
+`RateLimiter` instances, then prints both metric snapshots as a single
+JSON document. Useful as a smoke test and as the live reference of the
+metrics schema. Operators diff two consecutive snapshots over a known
+interval to derive throughput; sustained `>100 try_consume_calls/sec`
+per edge is the v0.3.0 migration trigger documented in
+[`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md).
+
 ## Example relay config
 
 A starter config lives in:
