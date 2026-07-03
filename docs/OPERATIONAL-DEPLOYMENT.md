@@ -88,8 +88,6 @@ documented in detail in the canonical case study:
   (English)
 - **Gist (Spanish)**: [Bypass TLS-Direct de Deadlocks de Proxy Perezoso](https://gist.github.com/louzt/585c737dd9eb8a1986dacf41476a1a14)
   (older revision, still authoritative on the protocol physics)
-- **Source draft**: `~/Proyectos/OSS/gist-sources/quic-tunnel-tls-direct-case-study/published/`
-  on the operator's laptop (757 lines, 4 Spanish drafts in `drafts/`).
 
 The case study documents:
 
