@@ -311,6 +311,12 @@ impl RelayStats {
     }
 }
 
+/// Real QUIC listener that accepts incoming SnapPipe connections.
+/// See [`listener::run_listener`].
+mod listener;
+
+pub use listener::run_listener;
+
 #[cfg(test)]
 mod tests {
     use super::*;
