@@ -1,0 +1,38 @@
+[Unit]
+Description=SnapPipe TCP-over-QUIC tunnel (client side, trusted peer host)
+Documentation=https://github.com/LOUST-PRO/SnapPipe
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=%i
+Group=%i
+# Client-side skeleton: bind a local TCP port and tunnel every accepted
+# connection through QUIC to the operator-controlled relay.
+#
+# The operator must:
+#   1. Issue a ticket with ALPN /snappipe/tunnel/0 and ship it to
+#      the peer along with the matching Ed25519 secret key:
+#
+#        snappipe ticket issue \
+#          --secret-key <operator-keys>/relay.secret \
+#          --subject-public-key ./peer.public \
+#          --relay-url quic://<relay-public-host>:4443 \
+#          --alpn /snappipe/tunnel/0 \
+#          --ttl-seconds 86400 \
+#          --output ./peer.ticket.json
+#
+#   2. Save the resulting peer.secret and peer.ticket.json under the
+#      user's $HOME/snappipe/ directory (or wherever the ExecStart
+#      below points).
+ExecStart=/usr/local/bin/snappipe tunnel connect \
+  --secret-key %h/snappipe/peer.secret \
+  --ticket %h/snappipe/peer.ticket.json \
+  --relay <relay-public-host>:4443 \
+  --listen 127.0.0.1:25566
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

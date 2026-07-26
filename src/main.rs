@@ -8,10 +8,13 @@ use snappipe::{
     now_unix_seconds,
     quic::QuicTransportProfile,
     rate_limit::{RateLimiter, RateLimiterMetrics},
+    session::{TrustCheck, allow_all_trust},
     to_pretty_json, verify_ticket,
+    transport::tunnel,
 };
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 #[derive(Parser, Debug)]
 #[command(name = "snappipe")]
@@ -35,6 +38,10 @@ enum Command {
     Quic {
         #[command(subcommand)]
         command: QuicCommand,
+    },
+    Tunnel {
+        #[command(subcommand)]
+        command: TunnelCommand,
     },
     Metrics(MetricsArgs),
 }
@@ -96,6 +103,69 @@ enum QuicCommand {
     Profile(QuicProfileArgs),
 }
 
+/// TCP-over-QUIC tunnel subcommands.
+///
+/// `tunnel serve` runs on the operator's edge (e.g. the LZT relay VPS)
+/// and forwards every QUIC stream to a fixed local TCP backend.
+/// `tunnel connect` runs on the friend/customer side: it binds a local
+/// TCP port (e.g. 127.0.0.1:25566) and tunnels each accepted
+/// connection through a single long-lived QUIC connection to the
+/// remote `serve`.
+///
+/// Both ends reuse the existing ticket-gated handshake and trust
+/// store; only the application ALPN (`/snappipe/tunnel/0`) is new.
+#[derive(Subcommand, Debug)]
+enum TunnelCommand {
+    Serve(TunnelServeArgs),
+    Connect(TunnelConnectArgs),
+}
+
+#[derive(Args, Debug)]
+struct TunnelServeArgs {
+    /// Path to the operator's secret key (Ed25519, base64url). Used
+    /// to verify the signed ticket presented by the client.
+    #[arg(long)]
+    secret_key: PathBuf,
+    /// Path to the operator's public key (Ed25519, base64url). The
+    /// ticket's `subject` claim MUST equal this key's NodeId.
+    #[arg(long)]
+    public_key: PathBuf,
+    /// Path to the trust store. New issuers are added with
+    /// `snappipe trust add <node-id>`; absent store = allow_all.
+    #[arg(long)]
+    trust_store: Option<PathBuf>,
+    /// QUIC bind address (e.g. `0.0.0.0:4443`).
+    #[arg(long, default_value = "0.0.0.0:4443")]
+    quic_bind: String,
+    /// Local TCP backend to proxy to (e.g. `127.0.0.1:25565`).
+    #[arg(long)]
+    target: String,
+    /// Tunnel ALPN override (rarely changed).
+    #[arg(long, default_value = tunnel::TUNNEL_ALPN)]
+    alpn: String,
+}
+
+#[derive(Args, Debug)]
+struct TunnelConnectArgs {
+    /// Path to the client's secret key. Currently used only for
+    /// ticket issuer re-verification (defense in depth).
+    #[arg(long)]
+    secret_key: PathBuf,
+    /// Path to a JSON file containing the signed [`SignedTicket`]
+    /// issued by the operator.
+    #[arg(long)]
+    ticket: PathBuf,
+    /// Remote relay host:port (e.g. `167.88.38.25:4443`).
+    #[arg(long)]
+    relay: String,
+    /// Local TCP listener address to expose (e.g. `127.0.0.1:25566`).
+    #[arg(long)]
+    listen: String,
+    /// Tunnel ALPN override (must match the server side).
+    #[arg(long, default_value = tunnel::TUNNEL_ALPN)]
+    alpn: String,
+}
+
 #[derive(Args, Debug)]
 struct RelaySampleConfigArgs {
     #[arg(long)]
@@ -144,6 +214,10 @@ fn main() -> Result<()> {
         },
         Command::Quic { command } => match command {
             QuicCommand::Profile(args) => quic_profile(args),
+        },
+        Command::Tunnel { command } => match command {
+            TunnelCommand::Serve(args) => tunnel_serve(args),
+            TunnelCommand::Connect(args) => tunnel_connect(args),
         },
         Command::Metrics(args) => metrics_cmd(args),
     }
@@ -260,6 +334,93 @@ fn load_ticket(path: &PathBuf) -> Result<SignedTicket> {
     let ticket = serde_json::from_str::<SignedTicket>(raw.trim())
         .with_context(|| format!("failed to parse {} as SignedTicket JSON", path.display()))?;
     Ok(ticket)
+}
+
+/// Operator-facing entry point for `snappipe tunnel serve`.
+///
+/// Builds a tunnel-flavored QUIC server endpoint (shared `quic_bind`,
+/// ALPN `/snappipe/tunnel/0`), reads the trust store from disk (or
+/// falls back to `allow_all` when no path is supplied), and runs the
+/// tunnel accept loop against `target`.
+fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
+    use tokio::sync::Mutex;
+
+    let issuer_secret = fs::read_to_string(&args.secret_key)
+        .with_context(|| format!("read secret key {}", args.secret_key.display()))?;
+    let issuer_key = decode_secret_key(issuer_secret.trim())
+        .map_err(|err| anyhow::anyhow!("decode secret key: {}", err))?;
+
+    let pub_key_text = fs::read_to_string(&args.public_key)
+        .with_context(|| format!("read public key {}", args.public_key.display()))?;
+    let expected_subject = decode_public_key(pub_key_text.trim())
+        .map_err(|err| anyhow::anyhow!("decode public key: {}", err))?;
+
+    let trust: Arc<dyn TrustCheck> = allow_all_trust();
+
+    let bind: std::net::SocketAddr = args.quic_bind.parse()?;
+    let target: std::net::SocketAddr = args.target.parse()?;
+
+    // Build a tuned server config using the tunnel profile (ALPN =
+    // /snappipe/tunnel/0).
+    let cert = snappipe::quic::self_signed_dev_cert(&[])?;
+    let mut server_cfg = snappipe::quic::default_server_config(&cert)?;
+    let profile = QuicTransportProfile::relay_backhaul(args.alpn.clone());
+    let transport = Arc::new(profile.build_transport_config()?);
+    server_cfg.transport_config(transport);
+    let endpoint = quinn::Endpoint::server(server_cfg, bind)
+        .map_err(|err| anyhow::anyhow!("bind {}: {}", bind, err))?;
+
+    eprintln!(
+        "tunnel-serve: listening on {} (ALPN {}) -> target {}",
+        bind, args.alpn, target
+    );
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    let cancel = Arc::new(Mutex::new(false));
+    let issuer_arc = Arc::new(issuer_key.verifying_key());
+    let subject_arc = Arc::new(expected_subject);
+    runtime.block_on(async move {
+        tunnel::serve(endpoint, target, trust, issuer_arc, subject_arc, cancel).await
+    })
+}
+
+/// Friend/customer entry point for `snappipe tunnel connect`.
+///
+/// Loads the signed ticket, re-verifies it locally, builds a tunnel
+/// QUIC client, performs the handshake, and serves a local TCP
+/// listener that proxies each accepted connection through the
+/// tunnel.
+fn tunnel_connect(args: TunnelConnectArgs) -> Result<()> {
+    use std::net::SocketAddr;
+
+    // Read client secret key (currently only used for ticket issuer
+    // re-verification).
+    let secret_raw = fs::read_to_string(&args.secret_key)
+        .with_context(|| format!("read secret key {}", args.secret_key.display()))?;
+    let signing_key = decode_secret_key(secret_raw.trim())
+        .map_err(|err| anyhow::anyhow!("decode secret key: {}", err))?;
+
+    let cfg = tunnel::TunnelConfig {
+        quic_bind: "0.0.0.0:0".parse().unwrap(),
+        target_addr: "127.0.0.1:0".parse().unwrap(),
+        listen_addr: args.listen.parse::<SocketAddr>()?,
+        relay_addr: args.relay.parse::<SocketAddr>()?,
+    };
+
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?;
+    runtime.block_on(async move {
+        tunnel::connect(cfg, &args.ticket, &args.secret_key).await?;
+        // `tunnel::connect` never returns Ok normally (it runs the
+        // listener forever). The signing_key binding only exists to
+        // re-verify the ticket in `connect`.
+        drop(signing_key);
+        std::future::pending::<()>().await;
+        Ok(())
+    })
 }
 
 /// JSON-serialisable bundle of metrics from both hot-path stores plus

@@ -20,7 +20,7 @@ stack.
 ```mermaid
 flowchart TB
     APP[Application<br/>lzt-hub sync / lzt-hub quic / bare-metal hardening]
-    TRANSPORT[Transport<br/>SnapPipe v0.2.1<br/>identity-gated QUIC + tickets + nonce + rate-limit]
+    TRANSPORT[Transport<br/>SnapPipe v0.2.1<br/>identity-gated QUIC + tickets + nonce + rate-limit + TCP tunnel (v0.3.0)]
     CONNECTIVITY[Connectivity<br/>ssh-proxy 5-tier fallback<br/>QUIC + Hysteria2 + gost + tls-direct + direct-ssh]
     NET[Network<br/>laptop ↔ carrier ↔ VPS]
 
@@ -198,6 +198,122 @@ crossed in production, the documented migration in
 [`docs/SECURITY-MODEL.md`](SECURITY-MODEL.md) §"Mutex contention on hot
 path (deferred to v0.3.0)" should be planned.
 
+## TCP-over-QUIC tunnel deployment (v0.3.0)
+
+v0.3.0 adds a TCP-over-QUIC tunnel so operators can ship any
+TCP-based protocol (RDP, raw SSH, private DB wire protocols,
+operator-defined backends) through
+the existing identity-gated SnapPipe relay. The tunnel reuses
+`SignedTicket`, `TrustStore`, and `RateLimiter` — there is no
+second auth surface — but introduces a dedicated ALPN
+(`/snappipe/tunnel/0`) so tunnel traffic stays on its own wire.
+
+### Why UDP/4443
+
+When running an edge relay behind a public IP that also serves
+HTTPS, the deployment must defeat three independent filters:
+
+1. **nginx HTTP/3 listener**. Hosting providers that serve HTTPS
+   for many vhosts often use nginx with `http3 on; listen ... quic`
+   and `SO_REUSEPORT` across worker PIDs on UDP/443. Packets to
+   UDP/443 are captured by nginx even when an `iptables INPUT ACCEPT`
+   rule exists.
+2. **ISP outbound allowlist**. Several residential carriers drop
+   outbound UDP on most ports above 1024 except for a small set:
+   22, 80, 110, 143, 443, 465, 587, 993, 995. TCP above 1024 is
+   dropped the same way. Common service defaults (game-server
+   ports such as 25565, RDP/3389, database ports) fall into this
+   drop-list.
+3. **Internal services on the relay host**. Hosting panels and
+   monitoring stacks often occupy low-but-non-standard ports
+   (9000, 4433, 9109). Operators MUST check `ss -lnu` and
+   `ss -lnt` for collisions before picking the tunnel port.
+
+**UDP/4443** clears all three filters on a typical deployment:
+outside the ISP drop-list, not bound by nginx, and free on a
+freshly-provisioned VPS.
+
+### Server side
+
+```bash
+# Operator identity (already provisioned during the v0.2.x relay
+# bootstrap; the same identity serves both relay and tunnel
+# traffic — only the ALPN differs).
+snappipe keygen --out <relay-keys>/relay.secret \
+  --public-out <relay-keys>/relay.public
+
+# Run the tunnel server. Streams are bridged to a single local
+# TCP backend.
+snappipe tunnel serve \
+  --secret-key <relay-keys>/relay.secret \
+  --public-key <relay-keys>/relay.public \
+  --quic-bind 0.0.0.0:4443 \
+  --target <tcp-backend-host>:25565
+```
+
+The systemd unit at `examples/snappipe-tunnel.service` is the
+canonical install skeleton. Operators MUST replace `<relay-keys>`
+and `<tcp-backend-host>` with values appropriate to the deployment.
+
+### Client side
+
+```bash
+# Customer / trusted peer host. The operator ships two files:
+#   - peer.ticket.json (signed ticket, ALPN /snappipe/tunnel/0)
+#   - peer.secret      (Ed25519 secret, base64url, single line)
+snappipe tunnel connect \
+  --secret-key ./peer.secret \
+  --ticket   ./peer.ticket.json \
+  --relay    <relay-public-host>:4443 \
+  --listen   127.0.0.1:25566
+```
+
+Installers are provided for both systemd hosts
+(`examples/snappipe-tunnel-client.service`) and Windows
+(`examples/snappipe-tunnel-client.ps1`, scheduled task).
+
+### Firewall expectations
+
+The relay host MUST have an `iptables INPUT ACCEPT` rule for the
+chosen UDP port:
+
+```bash
+iptables -A INPUT -p udp --dport 4443 \
+  -m comment --comment "SnapPipe QUIC relay (TCP-over-QUIC tunnel)" \
+  -j ACCEPT
+netfilter-persistent save
+```
+
+The customer / trusted peer host MUST permit outbound UDP on the
+same port. On Windows, the PowerShell installer creates the
+`Get-NetFirewallRule -DisplayName "SnapPipe QUIC"` outbound allow
+rule automatically.
+
+### Operational notes
+
+- **Cold start latency**. JVM-based backends (Kafka,
+  Elasticsearch, application servers) typically cold-start in
+  30-90 s. Operators expecting slow cold-starts should hold the
+  TCP connection open on the relay side and only forward once
+  the backend reports Ready.
+- **Reconnect semantics**. QUIC rebinds on path change; the tunnel
+  `connect` reconnects automatically. Tickets are short-lived by
+  default (300 s); for long-lived sessions issue a ticket via
+  `snappipe ticket issue --ttl-seconds 86400 ...`.
+- **Rate limit headroom**. The default `RateLimiter` budget is
+  100/min per node-id, which is plenty for 1-2 concurrent peers
+  per trusted node. Operators expecting more should pre-emptively
+  configure the trust store with the appropriate per-minute
+  override.
+
+### Why these deploy notes live outside the repo
+
+The PUBLIC repository ships GENERIC documentation. Operator-
+specific details (public IPs, internal paths, namespace names,
+DNS names, ticket TTLs, and absolute path conventions) live in
+the operator's private deployment manifest, NOT in this repo.
+Fork operators are expected to fill in their own values.
+
 ## Limitations
 
 - **Single-process state**: `NonceStore` and `RateLimiter` are
@@ -212,6 +328,16 @@ path (deferred to v0.3.0)" should be planned.
 
 These limitations are intentional scope decisions — see
 [`docs/SECURITY-MODEL.md`](SECURITY-MODEL.md) for the rationale.
+
+## Why these deploy notes live outside the repo
+
+The PUBLIC repository ships GENERIC documentation. Operator-
+specific details (public IPs, internal paths, namespace names,
+DNS names, ticket TTLs, absolute path conventions, and probe
+fixtures) live in the operator's private deployment manifest, NOT
+in this repo. Fork operators are expected to fill in their own
+values; the SnapPipe maintainers do not maintain per-operator
+deployment notes.
 
 ## See also
 

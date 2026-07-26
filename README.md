@@ -24,7 +24,7 @@ SnapPipe aims to provide a cleaner fallback layer:
 - keep the operator in control of relay infrastructure
 - keep the software stack open and inspectable
 
-## Current scope (v0.2.1)
+## Current scope (v0.3.0)
 
 This repository implements the **security / control-plane foundation**, hardened
 through the audit-driven batch summarised in [`RELEASES.md`](RELEASES.md):
@@ -85,7 +85,8 @@ graph LR
 
 | Version | Tag | Highlights |
 |---|---|---|
-| **v0.2.1** (current) | [`v0.2.1`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.2.1) | Hardening batch — see [`RELEASES.md`](RELEASES.md) and [`CHANGELOG.md`](CHANGELOG.md) |
+| **v0.3.0** (current) | [`v0.3.0`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.3.0) | TCP-over-QUIC tunnel (`tunnel serve` / `tunnel connect`), dedicated `/snappipe/tunnel/0` ALPN, systemd + PowerShell installers |
+| v0.2.1 | [`v0.2.1`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.2.1) | Hardening batch — see [`RELEASES.md`](RELEASES.md) and [`CHANGELOG.md`](CHANGELOG.md) |
 | v0.1.0 | [`v0.1.0`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.1.0) | Initial release — identity + tickets + QUIC profiles + CLI |
 
 SnapPipe is also published to crates.io under the `snappipe` crate name:
@@ -194,6 +195,125 @@ metrics schema. Operators diff two consecutive snapshots over a known
 interval to derive throughput; sustained `>100 try_consume_calls/sec`
 per edge is the v0.3.0 migration trigger documented in
 [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md).
+
+## TCP-over-QUIC tunnel (v0.3.0)
+
+SnapPipe v0.3.0 adds a transparent **TCP-over-QUIC tunnel** so
+operators running self-hosted relays can ship any TCP-based
+protocol (RDP, raw SSH, a private database wire protocol,
+operator-defined backends, …) through the same identity-gated
+transport. The tunnel reuses the existing `SignedTicket` /
+`TrustStore` / `RateLimiter` machinery — no new auth layer — but
+introduces a dedicated ALPN (`/snappipe/tunnel/0`) to keep tunnel
+traffic on its own wire from regular relay traffic.
+
+### Topology
+
+```
+┌────────────────────────────────────────────────────────────┐
+│ Customer / trusted peer host (Windows / macOS / Linux)     │
+│                                                            │
+│   Local TCP application                                    │
+│         │ TCP connect                                      │
+│         ▼                                                  │
+│   127.0.0.1:25566  (local listener)                        │
+│         │                                                  │
+│   snappipe tunnel connect                                  │
+│         │                                                  │
+└─────────┼──────────────────────────────────────────────────┘
+          │
+          │   QUIC / UDP/4443  (path-compatible with CGNAT)
+          ▼
+┌────────────────────────────────────────────────────────────┐
+│ Operator-controlled relay host                             │
+│                                                            │
+│   iptables INPUT ACCEPT UDP/4443                            │
+│         │                                                  │
+│   snappipe tunnel serve                                    │
+│         │                                                  │
+│   <tcp-backend-host>:<tcp-backend-port>                   │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Why UDP/4443?
+
+Several ISPs and hosting providers force transport onto a small
+allowlist, drop most UDP above 1024, or capture UDP/443 with
+HTTP/3 listeners configured via `SO_REUSEPORT`. **UDP/4443** is a
+defensible default because it is outside the typical ISP drop
+list, is not bound by HTTP/3 on a default HTTPS-only edge, and
+is unused by common hosting panels. Operators MUST verify
+`ss -lnu` and `ss -lnt` on the relay host before locking the
+choice in.
+
+### Server side
+
+```bash
+# 1. Operator identity (already exists from the relay bootstrap).
+snappipe keygen \
+  --out <operator-keys>/relay.secret \
+  --public-out <operator-keys>/relay.public
+
+# 2. Run the tunnel server. Each QUIC stream is bridged to a single
+#    local TCP backend.
+snappipe tunnel serve \
+  --secret-key <operator-keys>/relay.secret \
+  --public-key <operator-keys>/relay.public \
+  --quic-bind 0.0.0.0:4443 \
+  --target <tcp-backend-host>:<tcp-backend-port>
+```
+
+A drop-in systemd unit skeleton lives at
+[`examples/snappipe-tunnel.service`](examples/snappipe-tunnel.service).
+
+### Client side
+
+```bash
+# The operator ships two files to the trusted peer:
+#   - peer.ticket.json (signed ticket, ALPN /snappipe/tunnel/0)
+#   - peer.secret      (Ed25519 secret, base64url single-line)
+
+snappipe tunnel connect \
+  --secret-key ./peer.secret \
+  --ticket   ./peer.ticket.json \
+  --relay    <relay-public-host>:4443 \
+  --listen   127.0.0.1:25566
+```
+
+Systemd and Scheduled-Task installers are provided at
+[`examples/snappipe-tunnel-client.service`](examples/snappipe-tunnel-client.service)
+and
+[`examples/snappipe-tunnel-client.ps1`](examples/snappipe-tunnel-client.ps1).
+
+### Wire model
+
+- Stream 0 of every QUIC connection carries the signed ticket
+  handshake (see `src/session.rs`).
+- Streams 1..N each represent one proxied TCP connection. The
+  server dials the local target TCP socket and pumps bytes
+  bidirectionally.
+- Each peer is still rate-limited by the existing `RateLimiter`
+  (default 100/min, override via `TrustStore::set_limit`).
+
+### Testing
+
+The end-to-end test in [`tests/tunnel_e2e.rs`](tests/tunnel_e2e.rs)
+spins up an in-process TCP echo server, a tunnel server, and a
+tunnel client, then round-trips a payload through QUIC. Run it with:
+
+```bash
+cargo test --release --test tunnel_e2e
+```
+
+### Production caveats
+
+- The current implementation dials the target TCP once per stream.
+  Intentional: keeps failure semantics simple and matches what most
+  low-latency TCP workloads expect.
+- Replace the self-signed dev cert in production with proper PKI.
+  The `snappipe tunnel` client currently trusts whatever the server
+  presents; pinning the operator's cert out-of-band (via a trust
+  store / IRI) is required before exposing the relay publicly.
 
 ## Example relay config
 
