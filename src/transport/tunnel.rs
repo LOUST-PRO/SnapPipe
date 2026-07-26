@@ -34,8 +34,14 @@
 //! - The server side authenticates the peer by verifying the signed
 //!   ticket. Without a valid ticket (signed by the operator's
 //!   issuance key) the QUIC connection is closed at handshake time.
-//! - Each accepted stream consumes server resources; the existing
-//!   `RateLimiter` continues to apply per-peer caps.
+//! - Each accepted stream consumes server resources; the
+//!   `RateLimiter` and `TrustStore` gates are NOT yet wired into
+//!   `tunnel::serve` — they apply to the relay listener but not
+//!   to the tunnel endpoint specifically. Operators expecting
+//!   per-peer rate caps at the tunnel layer must layer them on
+//!   externally (e.g. via iptables connlimit or an haproxy in
+//!   front) until a follow-up PR threads the existing
+//!   `RateLimiter` through `tunnel::serve`.
 //! - The transport does NOT add encryption or confidentiality
 //!   guarantees beyond what the underlying QUIC stack already
 //!   provides.
@@ -91,16 +97,50 @@ pub struct TunnelConfig {
 }
 
 impl TunnelConfig {
-    /// Validate that all four addresses are populated. The caller is
-    /// responsible for filling them in based on role (serve vs
-    /// connect); this method exists to surface missing fields early.
+    /// Strict top-level sanity check: fail if any of the four
+    /// addresses has a zero port. Use this in callers that have not
+    /// yet decided which role they will play, or as a defensive
+    /// check before constructing the role-aware helpers.
     pub fn validate(&self) -> Result<()> {
-        if self.quic_bind.port() == 0
-            && self.target_addr.port() == 0
-            && self.listen_addr.port() == 0
-            && self.relay_addr.port() == 0
-        {
-            anyhow::bail!("TunnelConfig has no address populated");
+        if self.quic_bind.port() == 0 {
+            anyhow::bail!("TunnelConfig.quic_bind port is 0");
+        }
+        if self.target_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.target_addr port is 0");
+        }
+        if self.listen_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.listen_addr port is 0");
+        }
+        if self.relay_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.relay_addr port is 0");
+        }
+        Ok(())
+    }
+
+    /// Validate that the addresses relevant to a SERVER (`serve`)
+    /// are populated. The client-side fields (`listen_addr`,
+    /// `relay_addr`) are allowed to be `0.0.0.0:0` because the
+    /// server-side code never reads them; the converse applies to
+    /// `connect`.
+    pub fn validate_server(&self) -> Result<()> {
+        if self.quic_bind.port() == 0 {
+            anyhow::bail!("TunnelConfig.quic_bind is required for the server role");
+        }
+        if self.target_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.target_addr is required for the server role");
+        }
+        Ok(())
+    }
+
+    /// Validate that the addresses relevant to a CLIENT (`connect`)
+    /// are populated. The server-side fields are allowed to be
+    /// `0.0.0.0:0` because the client never reads them.
+    pub fn validate_client(&self) -> Result<()> {
+        if self.listen_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.listen_addr is required for the client role");
+        }
+        if self.relay_addr.port() == 0 {
+            anyhow::bail!("TunnelConfig.relay_addr is required for the client role");
         }
         Ok(())
     }
@@ -305,11 +345,23 @@ async fn bridge_quic_to_tcp(
 ///
 /// `ticket_path` points to a JSON file containing the signed
 /// [`SignedTicket`] the server will verify against the issuer key.
+///
+/// `issuer_public_key` is the operator's issuing VerifyingKey. It is
+/// used to verify the ticket locally before presenting it on the
+/// wire (defense in depth: a peer that somehow obtained a
+/// self-issued ticket would still fail this check).
+///
+/// `client_secret_key_path` is read for compatibility with the CLI
+/// surface (the secret is needed when the ticket issuer equals the
+/// client key, i.e. self-issued tickets during dev/testing). The
+/// server side, in production, will reject self-issued tickets
+/// unless that is the explicit operator policy.
 pub async fn connect_with(
     endpoint: Endpoint,
     listener: TcpListener,
     relay_addr: SocketAddr,
     ticket_path: &Path,
+    issuer_public_key: &ed25519_dalek::VerifyingKey,
     client_secret_key_path: &Path,
 ) -> Result<()> {
     // Read and parse ticket.
@@ -319,7 +371,9 @@ pub async fn connect_with(
     let ticket: SignedTicket = serde_json::from_str(ticket_raw.trim())
         .with_context(|| format!("parse ticket {}", ticket_path.display()))?;
 
-    // Read client key (used to re-verify the ticket issuer binding).
+    // Optional client secret (for self-issued tickets during
+    // dev/tests only; production clients use a separate peer key
+    // that is NOT the issuer).
     let secret_raw = tokio::fs::read_to_string(client_secret_key_path)
         .await
         .with_context(|| format!("read secret key {}", client_secret_key_path.display()))?;
@@ -339,17 +393,16 @@ pub async fn connect_with(
         .map_err(|err| anyhow::anyhow!("handshake with relay failed: {}", err))?;
 
     // Verify the ticket locally before sending it (defense-in-depth).
-    let _ = verify_ticket(
-        &ticket,
-        &_signing_key.verifying_key(),
-        crate::now_unix_seconds(),
-    )
-    .map_err(|err| {
-        anyhow::anyhow!(
-            "ticket failed local verification ({}). Re-issue from operator.",
-            ticket_error_label(&err)
-        )
-    })?;
+    // The ticket signature MUST be checked against the OPERATOR's
+    // issuing key, not the client's key — a self-issued ticket is
+    // only valid in dev/test scenarios.
+    let _ =
+        verify_ticket(&ticket, issuer_public_key, crate::now_unix_seconds()).map_err(|err| {
+            anyhow::anyhow!(
+                "ticket failed local verification ({}). Re-issue from operator.",
+                ticket_error_label(&err)
+            )
+        })?;
 
     // Perform ticket handshake over stream 0.
     let _summary = session::client_handshake(&conn, &ticket)
@@ -383,30 +436,36 @@ pub async fn connect_with(
     }
 }
 
-/// Convenience wrapper that builds the QUIC endpoint with the default
-/// self-signed dev cert. Production deployments should use
-/// [`connect_with`] with a real PKI bundle.
+/// Convenience wrapper that builds the QUIC endpoint with the server's
+/// certificate pinned into the client trust store. Production
+/// deployments should use [`connect_with`] with a real PKI bundle
+/// obtained out-of-band from the operator.
+///
+/// `server_cert_der` is the DER-encoded leaf certificate the server
+/// presents; it is pinned into the client's root store so the TLS
+/// handshake cannot succeed against an unrelated peer.
+///
+/// `issuer_public_key` is the operator's issuing VerifyingKey (see
+/// [`connect_with`]).
 pub async fn connect(
     cfg: TunnelConfig,
     ticket_path: &Path,
     client_secret_key_path: &Path,
+    server_cert_der: &[u8],
+    issuer_public_key: &ed25519_dalek::VerifyingKey,
 ) -> Result<()> {
     let listener = TcpListener::bind(cfg.listen_addr)
         .await
         .with_context(|| format!("bind local TCP {}", cfg.listen_addr))?;
     eprintln!("tunnel: client listening on TCP {}", cfg.listen_addr);
 
-    // Build client QUIC endpoint trusting the server's dev cert.
-    //
-    // NOTE: production deployments MUST replace this with a proper
-    // PKI: the server cert should be pinned out-of-band (e.g. via
-    // the trust store / IRI), not via a runtime-generated
-    // self-signed dev cert. The current shape mirrors
-    // `crate::quic::endpoint::build_client_endpoint`.
-    let cert = quic::self_signed_dev_cert(&[])?;
+    // Build a client QUIC endpoint that pins the server's cert into
+    // the trust store. This is the production path; the self-signed
+    // dev cert helper is only used by the e2e test which constructs
+    // both sides explicitly via `connect_with`.
     let listen_any: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let mut endpoint = Endpoint::client(listen_any)?;
-    let client_config = quic::default_client_config(&cert)?;
+    let client_config = quic::pinned_client_config(server_cert_der)?;
     endpoint.set_default_client_config(client_config);
 
     connect_with(
@@ -414,6 +473,7 @@ pub async fn connect(
         listener,
         cfg.relay_addr,
         ticket_path,
+        issuer_public_key,
         client_secret_key_path,
     )
     .await
@@ -436,17 +496,29 @@ mod tests {
 
     #[test]
     fn tunnel_config_rejects_fully_empty_population() {
-        // A default config with all zeros must fail validate() to
-        // catch misconfiguration early in `tunnel serve` / `tunnel
-        // connect`.
+        // A default config with all zeros must fail all three
+        // validation helpers to catch misconfiguration early in
+        // `tunnel serve` / `tunnel connect`. The strict
+        // `validate()` fails on any zero port; the role-aware
+        // helpers fail only on the ports relevant to that role.
         let cfg = TunnelConfig {
             quic_bind: "0.0.0.0:0".parse().unwrap(),
             target_addr: "127.0.0.1:0".parse().unwrap(),
             listen_addr: "127.0.0.1:0".parse().unwrap(),
             relay_addr: "0.0.0.0:0".parse().unwrap(),
         };
-        let result = cfg.validate();
-        assert!(result.is_err(), "validate should fail for all-zero addrs");
+        assert!(
+            cfg.validate().is_err(),
+            "validate should fail when any port is zero"
+        );
+        assert!(
+            cfg.validate_server().is_err(),
+            "validate_server should fail when quic_bind and target_addr are zero"
+        );
+        assert!(
+            cfg.validate_client().is_err(),
+            "validate_client should fail when listen_addr and relay_addr are zero"
+        );
     }
 
     #[test]

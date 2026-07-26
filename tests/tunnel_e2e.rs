@@ -127,7 +127,8 @@ async fn tunnel_round_trip_over_quic() {
 
     // Build the QUIC client endpoint trusting the *same* dev cert as the
     // server. `tunnel::connect_with` is the test-friendly variant that
-    // accepts pre-built endpoints.
+    // accepts pre-built endpoints. Issuer key == subject key (self-issued
+    // ticket) so we pass the issuer's verifying key as the ticket signer.
     let mut client_endpoint =
         quinn::Endpoint::client("127.0.0.1:0".parse().unwrap()).expect("client quic endpoint");
     let client_quic_cfg = snappipe::quic::default_client_config(&dev_cert).expect("client cfg");
@@ -136,12 +137,14 @@ async fn tunnel_round_trip_over_quic() {
     let client_handle = {
         let ticket_path = ticket_path.clone();
         let subject_secret_path = subject_secret_path.clone();
+        let issuer_vk = issuer.verifying_key();
         tokio::spawn(async move {
             tunnel::connect_with(
                 client_endpoint,
                 client_listener,
                 server_addr,
                 &ticket_path,
+                &issuer_vk,
                 &subject_secret_path,
             )
             .await

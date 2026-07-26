@@ -15,7 +15,11 @@ Group=snappipe
 #   <operator-keys>             absolute path to the operator's
 #                               secret/public keypair directory
 #                               (separate files: relay.secret +
-#                               relay.public)
+#                               relay.public). The relay identity is
+#                               provisioned ONCE during the v0.2.x
+#                               bootstrap; do not regenerate it here
+#                               or you will invalidate every issued
+#                               ticket and trust-store entry.
 #   <tcp-backend-host:port>     the local TCP service the tunnel
 #                               proxies to
 #

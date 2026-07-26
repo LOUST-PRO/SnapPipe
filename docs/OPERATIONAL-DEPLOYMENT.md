@@ -20,7 +20,7 @@ stack.
 ```mermaid
 flowchart TB
     APP[Application<br/>lzt-hub sync / lzt-hub quic / bare-metal hardening]
-    TRANSPORT[Transport<br/>SnapPipe v0.2.1<br/>identity-gated QUIC + tickets + nonce + rate-limit + TCP tunnel (v0.3.0)]
+    TRANSPORT[Transport<br/>SnapPipe v0.3.0<br/>identity-gated QUIC + tickets + nonce + rate-limit + TCP tunnel (v0.3.0)]
     CONNECTIVITY[Connectivity<br/>ssh-proxy 5-tier fallback<br/>QUIC + Hysteria2 + gost + tls-direct + direct-ssh]
     NET[Network<br/>laptop ↔ carrier ↔ VPS]
 
@@ -218,20 +218,26 @@ HTTPS, the deployment must defeat three independent filters:
    and `SO_REUSEPORT` across worker PIDs on UDP/443. Packets to
    UDP/443 are captured by nginx even when an `iptables INPUT ACCEPT`
    rule exists.
-2. **ISP outbound allowlist**. Several residential carriers drop
-   outbound UDP on most ports above 1024 except for a small set:
-   22, 80, 110, 143, 443, 465, 587, 993, 995. TCP above 1024 is
-   dropped the same way. Common service defaults (game-server
+2. **Peer ISP outbound allowlist**. Several residential carriers
+   drop outbound UDP on most ports above 1024 except for a small
+   set: 22, 80, 110, 143, 443, 465, 587, 993, 995. TCP above 1024
+   is dropped the same way. Common service defaults (game-server
    ports such as 25565, RDP/3389, database ports) fall into this
-   drop-list.
+   drop-list. UDP/4443 is one defensible candidate outside that
+   allowlist, but it is NOT guaranteed: some carriers drop
+   arbitrary UDP ranges regardless of port. Operators MUST probe
+   the peer's outbound path with `lzt-tunnel-probe` (or a manual
+   `nc -uvz <relay> 4443`) before locking the choice in, and fall
+   back to another port that passes the probe if 4443 is dropped.
 3. **Internal services on the relay host**. Hosting panels and
    monitoring stacks often occupy low-but-non-standard ports
    (9000, 4433, 9109). Operators MUST check `ss -lnu` and
    `ss -lnt` for collisions before picking the tunnel port.
 
-**UDP/4443** clears all three filters on a typical deployment:
-outside the ISP drop-list, not bound by nginx, and free on a
-freshly-provisioned VPS.
+**UDP/4443** clears filter 1 (not bound by nginx) and filter 3
+(unused on a freshly-provisioned VPS). Whether it clears filter 2
+depends on the peer's carrier — the operator-side documentation
+treats the choice as a probe-driven decision, not a guarantee.
 
 ### Server side
 
@@ -328,16 +334,6 @@ Fork operators are expected to fill in their own values.
 
 These limitations are intentional scope decisions — see
 [`docs/SECURITY-MODEL.md`](SECURITY-MODEL.md) for the rationale.
-
-## Why these deploy notes live outside the repo
-
-The PUBLIC repository ships GENERIC documentation. Operator-
-specific details (public IPs, internal paths, namespace names,
-DNS names, ticket TTLs, absolute path conventions, and probe
-fixtures) live in the operator's private deployment manifest, NOT
-in this repo. Fork operators are expected to fill in their own
-values; the SnapPipe maintainers do not maintain per-operator
-deployment notes.
 
 ## See also
 

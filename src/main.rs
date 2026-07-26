@@ -133,6 +133,14 @@ struct TunnelServeArgs {
     public_key: PathBuf,
     /// Path to the trust store. New issuers are added with
     /// `snappipe trust add <node-id>`; absent store = allow_all.
+    ///
+    /// NOTE: this flag is RESERVED for the upcoming trust-store
+    /// loader. The current `tunnel serve` falls back to
+    /// `allow_all_trust()` regardless of whether this path is
+    /// supplied, so a `Some(_)` value here is accepted for
+    /// forward-compatibility but does NOT tighten the issuer
+    /// allowlist yet. Do not rely on this flag in production until
+    /// trust-store loading is implemented in a follow-up PR.
     #[arg(long)]
     trust_store: Option<PathBuf>,
     /// QUIC bind address (e.g. `0.0.0.0:4443`).
@@ -148,15 +156,30 @@ struct TunnelServeArgs {
 
 #[derive(Args, Debug)]
 struct TunnelConnectArgs {
-    /// Path to the client's secret key. Currently used only for
-    /// ticket issuer re-verification (defense in depth).
+    /// Path to the client's secret key. Currently used only to
+    /// derive the local subject NodeId when self-issuing tickets
+    /// during dev/testing; production deployments ship a separate
+    /// peer key.
     #[arg(long)]
     secret_key: PathBuf,
     /// Path to a JSON file containing the signed [`SignedTicket`]
     /// issued by the operator.
     #[arg(long)]
     ticket: PathBuf,
-    /// Remote relay host:port (e.g. `167.88.38.25:4443`).
+    /// Path to the OPERATOR's public key (Ed25519, base64url). This
+    /// is the key that signed the ticket; the client uses it to
+    /// verify the ticket locally before presenting it on the wire.
+    /// Required: the client cannot trust a ticket whose issuer it
+    /// does not know.
+    #[arg(long)]
+    issuer_public_key: PathBuf,
+    /// Path to the relay's DER-encoded leaf certificate. Pinned
+    /// into the client trust store before the QUIC handshake so
+    /// the connection cannot succeed against an unrelated peer.
+    /// Required for production deployments.
+    #[arg(long)]
+    server_cert: PathBuf,
+    /// Remote relay host:port (e.g. `127.0.0.1:4443`).
     #[arg(long)]
     relay: String,
     /// Local TCP listener address to expose (e.g. `127.0.0.1:25566`).
@@ -358,6 +381,16 @@ fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
 
     let trust: Arc<dyn TrustCheck> = allow_all_trust();
 
+    if let Some(path) = &args.trust_store {
+        eprintln!(
+            "WARNING: --trust-store={} is currently a no-op in tunnel serve. \
+             Issuer allowlist is allow_all until TrustStore loading is wired \
+             in a follow-up PR. Do not rely on this flag to restrict issuers \
+             in production.",
+            path.display()
+        );
+    }
+
     let bind: std::net::SocketAddr = args.quic_bind.parse()?;
     let target: std::net::SocketAddr = args.target.parse()?;
 
@@ -396,12 +429,29 @@ fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
 fn tunnel_connect(args: TunnelConnectArgs) -> Result<()> {
     use std::net::SocketAddr;
 
-    // Read client secret key (currently only used for ticket issuer
-    // re-verification).
+    // Read client secret key. The handshake layer uses it only when
+    // the ticket is self-issued (dev/test); production deployments
+    // ship a separate peer key.
     let secret_raw = fs::read_to_string(&args.secret_key)
         .with_context(|| format!("read secret key {}", args.secret_key.display()))?;
-    let signing_key = decode_secret_key(secret_raw.trim())
+    let _signing_key = decode_secret_key(secret_raw.trim())
         .map_err(|err| anyhow::anyhow!("decode secret key: {}", err))?;
+
+    // Read the operator's issuing public key. The client uses it to
+    // verify the ticket signature before presenting it on the wire.
+    let issuer_pub_text = fs::read_to_string(&args.issuer_public_key).with_context(|| {
+        format!(
+            "read issuer public key {}",
+            args.issuer_public_key.display()
+        )
+    })?;
+    let issuer_public_key = decode_public_key(issuer_pub_text.trim())
+        .map_err(|err| anyhow::anyhow!("decode issuer public key: {}", err))?;
+
+    // Read + DER-decode the server cert. Pinned into the client
+    // trust store before the QUIC handshake.
+    let server_cert_der = fs::read(&args.server_cert)
+        .with_context(|| format!("read server cert {}", args.server_cert.display()))?;
 
     let cfg = tunnel::TunnelConfig {
         quic_bind: "0.0.0.0:0".parse().unwrap(),
@@ -414,11 +464,16 @@ fn tunnel_connect(args: TunnelConnectArgs) -> Result<()> {
         .enable_all()
         .build()?;
     runtime.block_on(async move {
-        tunnel::connect(cfg, &args.ticket, &args.secret_key).await?;
+        tunnel::connect(
+            cfg,
+            &args.ticket,
+            &args.secret_key,
+            &server_cert_der,
+            &issuer_public_key,
+        )
+        .await?;
         // `tunnel::connect` never returns Ok normally (it runs the
-        // listener forever). The signing_key binding only exists to
-        // re-verify the ticket in `connect`.
-        drop(signing_key);
+        // listener forever).
         std::future::pending::<()>().await;
         Ok(())
     })

@@ -18,7 +18,6 @@ use thiserror::Error;
 
 use super::{QuicProfileError, QuicTransportProfile};
 use crate::DEFAULT_ALPN;
-
 /// Default ALPN byte sequence advertised by both client and server configs.
 /// Sourced from [`crate::DEFAULT_ALPN`] so the wire protocol identifier lives
 /// in exactly one place — the lib.rs constant.
@@ -161,6 +160,32 @@ fn rustls_client_config(
     Ok(Arc::new(client_crypto))
 }
 
+/// Build a rustls-backed `ClientConfig` that pins a single DER-encoded
+/// certificate as the only trusted root. The cert is NOT
+/// runtime-generated; it must be obtained out-of-band (e.g. shipped
+/// with the operator's deployment notes) and pinned before the
+/// QUIC handshake.
+fn rustls_pinned_client_config(
+    cert_der: &[u8],
+    alpn: &[u8],
+) -> Result<Arc<rustls::ClientConfig>, QuicEndpointError> {
+    let cert = CertificateDer::from(cert_der.to_vec());
+    let mut roots = rustls::RootCertStore::empty();
+    roots
+        .add(cert)
+        .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?;
+
+    let provider = rustls::crypto::ring::default_provider();
+    let provider_arc = Arc::new(provider);
+    let mut client_crypto = rustls::ClientConfig::builder_with_provider(provider_arc)
+        .with_safe_default_protocol_versions()
+        .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    client_crypto.alpn_protocols = vec![alpn.to_vec()];
+    Ok(Arc::new(client_crypto))
+}
+
 /// Build a Quinn `ServerConfig` from a dev cert + the supplied profile.
 pub fn default_server_config(dev_cert: &DevCert) -> Result<ServerConfig, QuicEndpointError> {
     let rustls_cfg = rustls_server_config(dev_cert)?;
@@ -175,6 +200,32 @@ pub fn default_client_config(dev_cert: &DevCert) -> Result<ClientConfig, QuicEnd
     let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_cfg)
         .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?;
     Ok(ClientConfig::new(Arc::new(quic_client_config)))
+}
+
+/// Build a Quinn `ClientConfig` that pins a single DER-encoded
+/// certificate as the only trusted root, advertising the supplied
+/// ALPN. The cert is loaded from disk (or any out-of-band source)
+/// and pinned; the runtime never generates one.
+///
+/// This is the production entry point for tunnel clients: it forces
+/// a real cert chain to be shipped alongside the ticket, so the
+/// QUIC handshake cannot succeed against a peer that was not
+/// provisioned by the operator.
+pub fn pinned_client_config_with_alpn(
+    cert_der: &[u8],
+    alpn: &str,
+) -> Result<ClientConfig, QuicEndpointError> {
+    let rustls_cfg = rustls_pinned_client_config(cert_der, alpn.as_bytes())?;
+    let quic_client_config = quinn::crypto::rustls::QuicClientConfig::try_from(rustls_cfg)
+        .map_err(|err| QuicEndpointError::Rustls(err.to_string()))?;
+    Ok(ClientConfig::new(Arc::new(quic_client_config)))
+}
+
+/// Backwards-compatible wrapper that pins the supplied cert with the
+/// default ALPN (`/snappipe/0`). Use [`pinned_client_config_with_alpn`]
+/// for the tunnel ALPN.
+pub fn pinned_client_config(cert_der: &[u8]) -> Result<ClientConfig, QuicEndpointError> {
+    pinned_client_config_with_alpn(cert_der, DEFAULT_ALPN)
 }
 
 /// Build a server-only Quinn endpoint bound to `cfg.bind`, using
