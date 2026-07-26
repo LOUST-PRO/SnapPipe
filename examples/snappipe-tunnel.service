@@ -13,20 +13,22 @@ Group=snappipe
 # below with values appropriate to your deployment:
 #
 #   <operator-keys>             absolute path to the operator's
-#                               secret/public keypair directory
-#                               (separate files: relay.secret +
-#                               relay.public). The relay identity is
-#                               provisioned ONCE during the v0.2.x
-#                               bootstrap; do not regenerate it here
-#                               or you will invalidate every issued
-#                               ticket and trust-store entry.
+#                               keypair directory. The serve side
+#                               requires ONLY the issuer's *public*
+#                               half (relay.public); the secret stays
+#                               on the offline ticket-issuance host.
+#                               The relay identity is provisioned
+#                               ONCE during the v0.2.x bootstrap; do
+#                               not regenerate it here or you will
+#                               invalidate every issued ticket and
+#                               trust-store entry.
 #   <tcp-backend-host:port>     the local TCP service the tunnel
 #                               proxies to
 #
 # Adjust the QUIC port if 0.0.0.0:4443 is already in use on the host;
 # see docs/OPERATIONAL-DEPLOYMENT.md for the rationale.
 ExecStart=/usr/local/bin/snappipe tunnel serve \
-  --secret-key <operator-keys>/relay.secret \
+  --issuer-public-key <operator-keys>/relay.public \
   --public-key <operator-keys>/relay.public \
   --quic-bind 0.0.0.0:4443 \
   --target <tcp-backend-host:port>

@@ -256,7 +256,7 @@ passes both the local bind check and the peer's outbound allowlist.
 #    (`/snappipe/tunnel/0`) on a different port from the relay
 #    listener to keep wire traffic separate.
 snappipe tunnel serve \
-  --secret-key <operator-keys>/relay.secret \
+  --issuer-public-key <operator-keys>/relay.public \
   --public-key <operator-keys>/relay.public \
   --quic-bind 0.0.0.0:4443 \
   --target <tcp-backend-host>:<tcp-backend-port>

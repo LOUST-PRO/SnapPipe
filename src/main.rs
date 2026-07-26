@@ -123,24 +123,21 @@ enum TunnelCommand {
 
 #[derive(Args, Debug)]
 struct TunnelServeArgs {
-    /// Path to the operator's secret key (Ed25519, base64url). Used
-    /// to verify the signed ticket presented by the client.
+    /// Path to the operator's *public* key (Ed25519, base64url). The
+    /// server side only verifies ticket signatures, so it must NEVER
+    /// hold the issuer's secret key; the secret stays on the issuance
+    /// host (e.g. an offline ticket-issuer machine) and only the
+    /// verifying half reaches the edge.
     #[arg(long)]
-    secret_key: PathBuf,
+    issuer_public_key: PathBuf,
     /// Path to the operator's public key (Ed25519, base64url). The
     /// ticket's `subject` claim MUST equal this key's NodeId.
     #[arg(long)]
     public_key: PathBuf,
-    /// Path to the trust store. New issuers are added with
-    /// `snappipe trust add <node-id>`; absent store = allow_all.
-    ///
-    /// NOTE: this flag is RESERVED for the upcoming trust-store
-    /// loader. The current `tunnel serve` falls back to
-    /// `allow_all_trust()` regardless of whether this path is
-    /// supplied, so a `Some(_)` value here is accepted for
-    /// forward-compatibility but does NOT tighten the issuer
-    /// allowlist yet. Do not rely on this flag in production until
-    /// trust-store loading is implemented in a follow-up PR.
+    /// Path to the trust store. Reserved for the upcoming trust-store
+    /// loader; supplying this flag today causes `tunnel serve` to
+    /// refuse to start (issuer allowlist is hardcoded to `allow_all`
+    /// until the loader is wired in a follow-up PR).
     #[arg(long)]
     trust_store: Option<PathBuf>,
     /// QUIC bind address (e.g. `0.0.0.0:4443`).
@@ -369,10 +366,14 @@ fn load_ticket(path: &PathBuf) -> Result<SignedTicket> {
 fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
     use tokio::sync::Mutex;
 
-    let issuer_secret = fs::read_to_string(&args.secret_key)
-        .with_context(|| format!("read secret key {}", args.secret_key.display()))?;
-    let issuer_key = decode_secret_key(issuer_secret.trim())
-        .map_err(|err| anyhow::anyhow!("decode secret key: {}", err))?;
+    let issuer_text = fs::read_to_string(&args.issuer_public_key).with_context(|| {
+        format!(
+            "read issuer public key {}",
+            args.issuer_public_key.display()
+        )
+    })?;
+    let issuer_key = decode_public_key(issuer_text.trim())
+        .map_err(|err| anyhow::anyhow!("decode issuer public key: {}", err))?;
 
     let pub_key_text = fs::read_to_string(&args.public_key)
         .with_context(|| format!("read public key {}", args.public_key.display()))?;
@@ -382,11 +383,16 @@ fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
     let trust: Arc<dyn TrustCheck> = allow_all_trust();
 
     if let Some(path) = &args.trust_store {
-        eprintln!(
-            "WARNING: --trust-store={} is currently a no-op in tunnel serve. \
-             Issuer allowlist is allow_all until TrustStore loading is wired \
-             in a follow-up PR. Do not rely on this flag to restrict issuers \
-             in production.",
+        // The trust-store loader is not implemented yet. Reject the
+        // flag explicitly so a CLI invocation that supplies it does
+        // NOT silently degrade to allow_all. Operators expecting
+        // issuer allowlisting should not pass this flag until the
+        // loader ships in a follow-up PR.
+        anyhow::bail!(
+            "--trust-store={} is not supported yet. The flag is reserved \
+             for the upcoming trust-store loader; remove it from this \
+             invocation (allow_all is the current behaviour) or wait \
+             for the follow-up PR that wires the loader.",
             path.display()
         );
     }
@@ -413,7 +419,7 @@ fn tunnel_serve(args: TunnelServeArgs) -> Result<()> {
         .enable_all()
         .build()?;
     let cancel = Arc::new(Mutex::new(false));
-    let issuer_arc = Arc::new(issuer_key.verifying_key());
+    let issuer_arc = Arc::new(issuer_key);
     let subject_arc = Arc::new(expected_subject);
     runtime.block_on(async move {
         tunnel::serve(endpoint, target, trust, issuer_arc, subject_arc, cancel).await
@@ -470,6 +476,7 @@ fn tunnel_connect(args: TunnelConnectArgs) -> Result<()> {
             &args.secret_key,
             &server_cert_der,
             &issuer_public_key,
+            &args.alpn,
         )
         .await?;
         // `tunnel::connect` never returns Ok normally (it runs the

@@ -30,16 +30,17 @@ const TUNNEL_PAYLOAD: &[u8; 11] = b"hello-quic!";
 
 #[tokio::test(flavor = "multi_thread")]
 async fn tunnel_round_trip_over_quic() {
-    // -- Generate the operator keypair and issue a ticket ---------------------
-    // Self-issued ticket: issuer == subject. This mirrors the simplest
-    // end-to-end case where one operator key both signs and consumes
-    // tickets (the friend's secret key IS the issuer's secret).
+    // -- Generate the operator keypair and a distinct peer keypair ------------
+    // The issuer (operator) signs the ticket; the subject (peer) is the
+    // identity the ticket binds to. Using distinct keys exercises the
+    // code path where verify_ticket is called against the ISSUER's key,
+    // not the peer's own key (the bug CodeRabbit flagged in round 2).
     let issuer = generate_signing_key();
-    let subject = &issuer;
+    let subject_key = generate_signing_key();
     let now = now_unix_seconds();
     let ticket = issue_ticket(
         &issuer,
-        None,
+        Some(&subject_key.verifying_key()),
         "quic://127.0.0.1:4443",
         tunnel::TUNNEL_ALPN,
         300,
@@ -54,6 +55,7 @@ async fn tunnel_round_trip_over_quic() {
     let issuer_secret_path = tmp.join("issuer.secret");
     let issuer_public_path = tmp.join("issuer.public");
     let subject_secret_path = tmp.join("subject.secret");
+    let subject_public_path = tmp.join("subject.public");
     let ticket_path = tmp.join("ticket.json");
     std::fs::write(
         &issuer_secret_path,
@@ -67,14 +69,23 @@ async fn tunnel_round_trip_over_quic() {
     .expect("write issuer public");
     std::fs::write(
         &subject_secret_path,
-        format!("{}\n", encode_secret_key(subject)),
+        format!("{}\n", encode_secret_key(&subject_key)),
     )
     .expect("write subject secret");
+    std::fs::write(
+        &subject_public_path,
+        format!("{}\n", encode_public_key(&subject_key.verifying_key())),
+    )
+    .expect("write subject public");
     let ticket_json = serde_json::to_string(&ticket).expect("ticket json");
     std::fs::write(&ticket_path, format!("{}\n", ticket_json)).expect("write ticket");
 
-    // Decode the public key on disk to mirror the operator-side verification.
-    let pub_key_text = std::fs::read_to_string(&issuer_public_path).expect("read issuer public");
+    // The server enforces `subject == expected_subject`. With distinct
+    // keys the expected subject is the subject_key's public key, NOT
+    // the issuer's — this is the cross-key case the production
+    // deployment exercises (operator issues ticket to peer).
+    let pub_key_text =
+        std::fs::read_to_string(&subject_public_path).expect("read subject public");
     let expected_subject = decode_public_key(pub_key_text.trim()).expect("decode public");
 
     // -- Spin up an in-process TCP echo backend -------------------------------

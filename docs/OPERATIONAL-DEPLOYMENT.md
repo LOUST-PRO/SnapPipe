@@ -251,7 +251,7 @@ snappipe keygen --out <relay-keys>/relay.secret \
 # Run the tunnel server. Streams are bridged to a single local
 # TCP backend.
 snappipe tunnel serve \
-  --secret-key <relay-keys>/relay.secret \
+  --issuer-public-key <relay-keys>/relay.public \
   --public-key <relay-keys>/relay.public \
   --quic-bind 0.0.0.0:4443 \
   --target <tcp-backend-host>:25565

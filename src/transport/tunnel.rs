@@ -447,12 +447,17 @@ pub async fn connect_with(
 ///
 /// `issuer_public_key` is the operator's issuing VerifyingKey (see
 /// [`connect_with`]).
+///
+/// `alpn` overrides the protocol identifier used during the QUIC
+/// handshake; it MUST match the server's configured ALPN or the
+/// handshake fails cleanly.
 pub async fn connect(
     cfg: TunnelConfig,
     ticket_path: &Path,
     client_secret_key_path: &Path,
     server_cert_der: &[u8],
     issuer_public_key: &ed25519_dalek::VerifyingKey,
+    alpn: &str,
 ) -> Result<()> {
     let listener = TcpListener::bind(cfg.listen_addr)
         .await
@@ -465,7 +470,7 @@ pub async fn connect(
     // both sides explicitly via `connect_with`.
     let listen_any: SocketAddr = "0.0.0.0:0".parse().unwrap();
     let mut endpoint = Endpoint::client(listen_any)?;
-    let client_config = quic::pinned_client_config(server_cert_der)?;
+    let client_config = quic::pinned_client_config_with_alpn(server_cert_der, alpn)?;
     endpoint.set_default_client_config(client_config);
 
     connect_with(
