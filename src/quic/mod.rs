@@ -6,7 +6,8 @@ use thiserror::Error;
 mod endpoint;
 pub use endpoint::{
     DEFAULT_DEV_SAN, EndpointRole, QuicEndpointConfig, build_client_endpoint,
-    build_server_endpoint, default_client_config, default_server_config, self_signed_dev_cert,
+    build_server_endpoint, default_client_config, default_server_config, pinned_client_config,
+    pinned_client_config_with_alpn, self_signed_dev_cert,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

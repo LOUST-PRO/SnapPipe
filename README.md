@@ -24,7 +24,7 @@ SnapPipe aims to provide a cleaner fallback layer:
 - keep the operator in control of relay infrastructure
 - keep the software stack open and inspectable
 
-## Current scope (v0.2.1)
+## Current scope (v0.3.0)
 
 This repository implements the **security / control-plane foundation**, hardened
 through the audit-driven batch summarised in [`RELEASES.md`](RELEASES.md):
@@ -85,7 +85,8 @@ graph LR
 
 | Version | Tag | Highlights |
 |---|---|---|
-| **v0.2.1** (current) | [`v0.2.1`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.2.1) | Hardening batch — see [`RELEASES.md`](RELEASES.md) and [`CHANGELOG.md`](CHANGELOG.md) |
+| **v0.3.0** (current) | [`v0.3.0`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.3.0) | TCP-over-QUIC tunnel (`tunnel serve` / `tunnel connect`), dedicated `/snappipe/tunnel/0` ALPN, systemd + PowerShell installers |
+| v0.2.1 | [`v0.2.1`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.2.1) | Hardening batch — see [`RELEASES.md`](RELEASES.md) and [`CHANGELOG.md`](CHANGELOG.md) |
 | v0.1.0 | [`v0.1.0`](https://github.com/LOUST-PRO/SnapPipe/releases/tag/v0.1.0) | Initial release — identity + tickets + QUIC profiles + CLI |
 
 SnapPipe is also published to crates.io under the `snappipe` crate name:
@@ -94,7 +95,7 @@ SnapPipe is also published to crates.io under the `snappipe` crate name:
 cargo add snappipe
 ```
 
-The published crate metadata mirrors the `v0.2.1` git tag exactly
+The published crate metadata mirrors the `v0.3.0` git tag exactly
 (Cargo.toml `version`, repository, license, keywords, categories).
 
 ## Why the name SnapPipe
@@ -194,6 +195,140 @@ metrics schema. Operators diff two consecutive snapshots over a known
 interval to derive throughput; sustained `>100 try_consume_calls/sec`
 per edge is the v0.3.0 migration trigger documented in
 [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md).
+
+## TCP-over-QUIC tunnel (v0.3.0)
+
+SnapPipe v0.3.0 adds a transparent **TCP-over-QUIC tunnel** so
+operators running self-hosted relays can ship any TCP-based
+protocol (RDP, raw SSH, a private database wire protocol,
+operator-defined backends, …) through the same identity-gated
+transport. The tunnel reuses the existing `SignedTicket` /
+`TrustStore` / `RateLimiter` machinery — no new auth layer — but
+introduces a dedicated ALPN (`/snappipe/tunnel/0`) to keep tunnel
+traffic on its own wire from regular relay traffic.
+
+### Topology
+
+```mermaid
+flowchart LR
+    subgraph Peer["Customer / trusted peer host"]
+        App["Local TCP application"]
+        Listener["127.0.0.1:25566<br/>(local listener)"]
+        Connect["snappipe tunnel connect"]
+        App -- "TCP connect" --> Listener --> Connect
+    end
+
+    subgraph Relay["Operator-controlled relay host"]
+        Fw["iptables INPUT ACCEPT UDP/4443"]
+        Serve["snappipe tunnel serve"]
+        Backend["<tcp-backend-host>:\<tcp-backend-port\>"]
+        Fw --> Serve --> Backend
+    end
+
+    Connect -- "QUIC / UDP/4443<br/>(path-compatible with CGNAT)" --> Fw
+```
+
+### Why UDP/4443?
+
+Several ISPs and hosting providers force transport onto a small
+allowlist, drop most UDP above 1024, or capture UDP/443 with
+HTTP/3 listeners configured via `SO_REUSEPORT`. **UDP/4443** is a
+defensible default candidate: it sits outside the typical
+allowlist of captive-portal ISPs that ship with only 22/80/110/143/443/465/587/993/995
+open, it is not bound by HTTP/3 on a default HTTPS-only edge, and
+it is unused by common hosting panels. Operators MUST verify
+`ss -lnu` and `ss -lnt` on the relay host and confirm reachability
+from the peer network before locking the choice in; if 4443 is
+dropped by the peer ISP, fall back to another port above 1024 that
+passes both the local bind check and the peer's outbound allowlist.
+
+### Server side
+
+```bash
+# 1. The relay identity is provisioned ONCE during the v0.2.x
+#    bootstrap (the same `relay.secret` + `relay.public` already in
+#    place for the existing relay listener). Do not regenerate it
+#    here or you will invalidate every issued ticket and every
+#    trust-store entry that points at the previous NodeId.
+#
+# 2. Run the tunnel server. Each QUIC stream is bridged to a single
+#    local TCP backend. The server uses the tunnel ALPN
+#    (`/snappipe/tunnel/0`) on a different port from the relay
+#    listener to keep wire traffic separate.
+snappipe tunnel serve \
+  --issuer-public-key <operator-keys>/relay.public \
+  --public-key <operator-keys>/relay.public \
+  --quic-bind 0.0.0.0:4443 \
+  --target <tcp-backend-host>:<tcp-backend-port>
+```
+
+A drop-in systemd unit skeleton lives at
+[`examples/snappipe-tunnel.service`](examples/snappipe-tunnel.service).
+
+### Client side
+
+```bash
+# The operator ships FOUR files to the trusted peer:
+#   - peer.ticket.json (signed ticket, ALPN /snappipe/tunnel/0,
+#     subject = relay.public)
+#   - peer.secret      (Ed25519 secret, base64url single-line)
+#   - relay.public     (operator's issuing public key, for local
+#     ticket verification on the peer host)
+#   - relay.cert.der   (operator's DER-encoded leaf cert, pinned
+#     into the client trust store before the QUIC handshake)
+
+snappipe tunnel connect \
+  --secret-key ./peer.secret \
+  --ticket   ./peer.ticket.json \
+  --issuer-public-key ./relay.public \
+  --server-cert      ./relay.cert.der \
+  --relay    <relay-public-host>:4443 \
+  --listen   127.0.0.1:25566
+```
+
+Systemd and Scheduled-Task installers are provided at
+[`examples/snappipe-tunnel-client.service`](examples/snappipe-tunnel-client.service)
+and
+[`examples/snappipe-tunnel-client.ps1`](examples/snappipe-tunnel-client.ps1).
+
+### Wire model
+
+- Stream 0 of every QUIC connection carries the signed ticket
+  handshake (see `src/session.rs`).
+- Streams 1..N each represent one proxied TCP connection. The
+  server dials the local target TCP socket and pumps bytes
+  bidirectionally.
+- Per-NodeId rate limiting from the existing `RateLimiter` is
+  available in the relay listener; the tunnel endpoint in this
+  release does NOT yet consume the same `RateLimiter` — operators
+  expecting per-peer rate caps at the tunnel layer must layer
+  them on externally (e.g. via iptables `connlimit` or an
+  haproxy in front) until a follow-up PR threads the existing
+  `RateLimiter` through `tunnel::serve`.
+
+### Testing
+
+The end-to-end test in [`tests/tunnel_e2e.rs`](tests/tunnel_e2e.rs)
+spins up an in-process TCP echo server, a tunnel server, and a
+tunnel client, then round-trips a payload through QUIC. Run it with:
+
+```bash
+cargo test --release --test tunnel_e2e
+```
+
+### Production caveats
+
+- The current implementation dials the target TCP once per stream.
+  Intentional: keeps failure semantics simple and matches what most
+  low-latency TCP workloads expect. Backends that need a
+  warm-pool (e.g. JVM services with 30-90 s cold starts) MUST
+  keep their own readiness gate; the tunnel cannot hold a
+  connection open while the backend is cold.
+- Replace the self-signed dev cert in production with proper PKI
+  and pin the operator's cert into the client trust store via
+  `snappipe tunnel connect --server-cert <relay>.cert.der`. The
+  flag is **required**: without it the client cannot complete
+  the QUIC handshake against a real deployment.
 
 ## Example relay config
 

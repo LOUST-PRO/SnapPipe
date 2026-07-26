@@ -1,9 +1,21 @@
 # SnapPipe relay sample configuration
 # This is intentionally self-hosted and operator-controlled.
+#
+# `quic_bind` defaults to UDP/4443 because:
+#   - UDP/443 is commonly captured by HTTP/3 listeners via
+#     `SO_REUSEPORT` on HTTPS edges, so packets never reach the
+#     SnapPipe endpoint even with a matching INPUT ACCEPT rule.
+#   - Several carriers drop outbound UDP on most ports above 1024
+#     except a small allowlist. 4443 is outside that allowlist
+#     but unfettered on a freshly-provisioned host.
+#
+# Operators MUST verify with `ss -lnu` and `ss -lnt` that the
+# chosen port is free on the relay host. See
+# docs/OPERATIONAL-DEPLOYMENT.md for the full rationale.
 
 node_name = "snappipe-relay-prod-1"
 public_hostname = "relay.example.net"
-quic_bind = "0.0.0.0:4433"
+quic_bind = "0.0.0.0:4443"
 metrics_bind = "127.0.0.1:9109"
 default_alpn = "/snappipe/0"
 # Optional STUN compatibility endpoint if you want to co-locate discovery helpers.

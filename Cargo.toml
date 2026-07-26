@@ -1,6 +1,6 @@
 [package]
 name = "snappipe"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 description = "Identity-based QUIC transport toolkit with signed tickets and self-hosted relay scaffolding"
 license = "Apache-2.0"

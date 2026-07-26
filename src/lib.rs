@@ -18,6 +18,7 @@ pub mod sync;
 pub mod nonce_store;
 pub mod rate_limit;
 pub mod relay;
+pub mod transport;
 pub mod trust;
 
 pub const TICKET_VERSION: u8 = 1;
