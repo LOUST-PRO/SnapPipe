@@ -55,8 +55,11 @@ async fn tunnel_round_trip_over_quic() {
     let issuer_public_path = tmp.join("issuer.public");
     let subject_secret_path = tmp.join("subject.secret");
     let ticket_path = tmp.join("ticket.json");
-    std::fs::write(&issuer_secret_path, format!("{}\n", encode_secret_key(&issuer)))
-        .expect("write issuer secret");
+    std::fs::write(
+        &issuer_secret_path,
+        format!("{}\n", encode_secret_key(&issuer)),
+    )
+    .expect("write issuer secret");
     std::fs::write(
         &issuer_public_path,
         format!("{}\n", encode_public_key(&issuer.verifying_key())),
@@ -71,8 +74,7 @@ async fn tunnel_round_trip_over_quic() {
     std::fs::write(&ticket_path, format!("{}\n", ticket_json)).expect("write ticket");
 
     // Decode the public key on disk to mirror the operator-side verification.
-    let pub_key_text =
-        std::fs::read_to_string(&issuer_public_path).expect("read issuer public");
+    let pub_key_text = std::fs::read_to_string(&issuer_public_path).expect("read issuer public");
     let expected_subject = decode_public_key(pub_key_text.trim()).expect("decode public");
 
     // -- Spin up an in-process TCP echo backend -------------------------------
@@ -118,7 +120,9 @@ async fn tunnel_round_trip_over_quic() {
     };
 
     // -- Build the tunnel client (local listener on a random port) -----------
-    let client_listener = TcpListener::bind("127.0.0.1:0").await.expect("client tcp bind");
+    let client_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("client tcp bind");
     let listen_addr = client_listener.local_addr().expect("client local addr");
 
     // Build the QUIC client endpoint trusting the *same* dev cert as the

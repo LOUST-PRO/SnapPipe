@@ -63,10 +63,10 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use quinn::{Connection, Endpoint};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::Mutex;
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::Mutex;
 
-use crate::session::{self, server_handshake, TrustCheck};
+use crate::session::{self, TrustCheck, server_handshake};
 use crate::{SignedTicket, TicketError, decode_secret_key, quic, verify_ticket};
 
 /// ALPN identifier reserved for TCP-over-QUIC tunnels. Kept distinct
@@ -95,8 +95,10 @@ impl TunnelConfig {
     /// responsible for filling them in based on role (serve vs
     /// connect); this method exists to surface missing fields early.
     pub fn validate(&self) -> Result<()> {
-        if self.quic_bind.port() == 0 && self.target_addr.port() == 0
-            && self.listen_addr.port() == 0 && self.relay_addr.port() == 0
+        if self.quic_bind.port() == 0
+            && self.target_addr.port() == 0
+            && self.listen_addr.port() == 0
+            && self.relay_addr.port() == 0
         {
             anyhow::bail!("TunnelConfig has no address populated");
         }
@@ -142,7 +144,10 @@ pub async fn serve(
             Ok(connecting) => match connecting.await {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!("tunnel: incoming connection failed during QUIC handshake: {}", e);
+                    eprintln!(
+                        "tunnel: incoming connection failed during QUIC handshake: {}",
+                        e
+                    );
                     continue;
                 }
             },
@@ -159,7 +164,9 @@ pub async fn serve(
         let cancel = Arc::clone(&cancel);
 
         tokio::spawn(async move {
-            if let Err(err) = handle_tunnel_connection(conn, target, trust, issuer, subject, cancel).await {
+            if let Err(err) =
+                handle_tunnel_connection(conn, target, trust, issuer, subject, cancel).await
+            {
                 eprintln!("tunnel: connection ended with error: {}", err);
             }
         });
@@ -227,7 +234,8 @@ async fn handle_tunnel_connection(
                     return;
                 }
             };
-            if let Err(err) = bridge_quic_to_tcp(qs_send_for_bridge, qs_recv_for_bridge, tcp).await {
+            if let Err(err) = bridge_quic_to_tcp(qs_send_for_bridge, qs_recv_for_bridge, tcp).await
+            {
                 eprintln!("tunnel: bridge ended: {}", err);
             }
         });
@@ -331,13 +339,17 @@ pub async fn connect_with(
         .map_err(|err| anyhow::anyhow!("handshake with relay failed: {}", err))?;
 
     // Verify the ticket locally before sending it (defense-in-depth).
-    let _ = verify_ticket(&ticket, &_signing_key.verifying_key(), crate::now_unix_seconds())
-        .map_err(|err| {
-            anyhow::anyhow!(
-                "ticket failed local verification ({}). Re-issue from operator.",
-                ticket_error_label(&err)
-            )
-        })?;
+    let _ = verify_ticket(
+        &ticket,
+        &_signing_key.verifying_key(),
+        crate::now_unix_seconds(),
+    )
+    .map_err(|err| {
+        anyhow::anyhow!(
+            "ticket failed local verification ({}). Re-issue from operator.",
+            ticket_error_label(&err)
+        )
+    })?;
 
     // Perform ticket handshake over stream 0.
     let _summary = session::client_handshake(&conn, &ticket)
@@ -448,7 +460,10 @@ mod tests {
         let cases = vec![
             (TicketError::Expired, "expired"),
             (TicketError::InvalidKeyEncoding, "invalid_key_encoding"),
-            (TicketError::InvalidSignatureEncoding, "invalid_signature_encoding"),
+            (
+                TicketError::InvalidSignatureEncoding,
+                "invalid_signature_encoding",
+            ),
             (TicketError::InvalidSignature, "invalid_signature"),
             (TicketError::UnsupportedVersion(7), "unsupported_version"),
             (TicketError::Serialization("x".into()), "serialization"),

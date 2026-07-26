@@ -9,8 +9,9 @@ use snappipe::{
     quic::QuicTransportProfile,
     rate_limit::{RateLimiter, RateLimiterMetrics},
     session::{TrustCheck, allow_all_trust},
-    to_pretty_json, verify_ticket,
+    to_pretty_json,
     transport::tunnel,
+    verify_ticket,
 };
 use std::fs;
 use std::path::PathBuf;
