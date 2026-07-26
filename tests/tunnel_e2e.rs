@@ -84,8 +84,7 @@ async fn tunnel_round_trip_over_quic() {
     // keys the expected subject is the subject_key's public key, NOT
     // the issuer's — this is the cross-key case the production
     // deployment exercises (operator issues ticket to peer).
-    let pub_key_text =
-        std::fs::read_to_string(&subject_public_path).expect("read subject public");
+    let pub_key_text = std::fs::read_to_string(&subject_public_path).expect("read subject public");
     let expected_subject = decode_public_key(pub_key_text.trim()).expect("decode public");
 
     // -- Spin up an in-process TCP echo backend -------------------------------
