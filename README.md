@@ -389,15 +389,3 @@ during initial bootstrap; that combination is no longer offered.
 ## Notes on inspiration
 
 This project is informed by the practical strengths of identity-centric networking tools and QUIC-based transport designs, but it is intentionally being built as an operator-controlled OSS path with self-hostable relay assumptions.
-
-## LZT hardening fork
-
-This repository is a Lou-maintained fork with hardening applied:
-
-- Defensive defaults (fail-closed, no silent fallbacks)
-- Sanitization gate on public-facing files
-- No telemetry by default
-
-See [LICENSE-FORK.md](./LICENSE-FORK.md) for the full hardening addendum
-and [ci-debug-lab](https://github.com/louzt/ci-debug-lab) for the broader
-verification toolkit (cgroups v2, /dev/shm sizing, canary probes).
