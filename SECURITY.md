@@ -18,3 +18,16 @@ PGP key fingerprint: see https://loust.pro/pgp
 
 See [`docs/SECURITY-MODEL.md`](docs/SECURITY-MODEL.md) for the full threat
 model, hardening posture, and known technical debt.
+
+## Supported Versions
+
+| Version | Supported          |
+|---------|--------------------|
+| latest  | :white_check_mark: |
+| < 1.0   | :x:                |
+
+## Security Hardening (LZT additions)
+
+- Sanitization grep gate on public-facing changes
+- No telemetry or auto-publish
+- CODEOWNERS enforced for sensitive paths
