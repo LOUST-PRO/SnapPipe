@@ -22,7 +22,7 @@ the audit that triggered this batch.
 
 **Sub-second mtime.** `Mtime { secs, nanos }` replaces the
 second-precision `mtime_unix`. The bare-metal hardening synchronizer
-(which uses `scp -p` to preserve mtime for `lzt-hub sync`) can now
+(which uses `scp -p` to preserve mtime during sync) can now
 distinguish two writes that fall inside the same wall-clock second. The
 regression guard is the integration test
 `mtime_distinguishes_two_writes_within_same_second`.

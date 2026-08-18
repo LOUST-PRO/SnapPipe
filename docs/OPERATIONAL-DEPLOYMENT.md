@@ -19,7 +19,7 @@ stack.
 
 ```mermaid
 flowchart TB
-    APP[Application<br/>lzt-hub sync / lzt-hub quic / bare-metal hardening]
+    APP[Application<br/>operator-side sync + QUIC smoke + bare-metal hardening]
     TRANSPORT[Transport<br/>SnapPipe v0.3.0<br/>identity-gated QUIC + tickets + nonce + rate-limit + TCP tunnel (v0.3.0)]
     CONNECTIVITY[Connectivity<br/>ssh-proxy 5-tier fallback<br/>QUIC + Hysteria2 + gost + tls-direct + direct-ssh]
     NET[Network<br/>laptop ↔ carrier ↔ VPS]
@@ -33,7 +33,7 @@ flowchart TB
 
 | Layer | Responsibility | Operator-facing tool |
 |---|---|---|
-| **Application** | What data moves (sync plane, relay plane, hardening fragments) | `lzt-hub sync`, `lzt-hub quic`, `lzt-hub-watcher` |
+| **Application** | What data moves (sync plane, relay plane, hardening fragments) | operator-side sync, QUIC smoke harness, config watcher |
 | **Transport** (SnapPipe) | Who is allowed to talk (identity gating, replay protection, rate limits) | `snappipe` crate + CLI |
 | **Connectivity** | How bytes traverse the carrier (5-tier race-pattern fallback) | `ssh-proxy` daemon + `gost` relay + `tls-direct` bypass |
 
@@ -75,7 +75,7 @@ The pattern works because each layer has a defined responsibility:
    - 16-byte nonce not seen within the 60-second TTL window
    - Per-NodeId rate limit not exceeded
    - ALPN matches the `DEFAULT_ALPN` constant
-3. **`lzt-hub` (application)** pushes and pulls fragments over the
+3. **Application layer** pushes and pulls fragments over the
    gated sessions: `~/.claude/` sync, hardening fragments, LSP
    diagnostics, agent context deltas.
 
@@ -173,8 +173,8 @@ clamped to `DEFAULT_RATE_PER_MIN`, not silently disabled).
 | Component | Required version | Notes |
 |---|---|---|
 | `snappipe` | ≥ 0.2.1 | This crate. Earlier versions do not have the lazy-seed bug fix in `RateLimiter::set_limit` and may grant fewer initial tokens than configured. |
-| `lzt-hub-quic` | ≥ 0.4.2 | The QUIC smoke command. v0.4.2 introduced the B1.7 mtime preservation that SnapPipe v0.2.1 mirrors in `Mtime { secs, nanos }`. |
-| `lzt-hub-sync` | B1.8+ | The bare-metal hardening synchroniser. B1.8 added the `host_specific` filter; B1.9 added the 3-way `settings.json` merge with dual-write convergence. |
+| Operator QUIC smoke harness | ≥ 0.4.2 | The QUIC smoke command. v0.4.2 introduced the B1.7 mtime preservation that SnapPipe v0.2.1 mirrors in `Mtime { secs, nanos }`. |
+| Operator bare-metal synchroniser | B1.8+ | The bare-metal hardening synchroniser. B1.8 added the `host_specific` filter; B1.9 added the 3-way `settings.json` merge with dual-write convergence. |
 | `ssh-proxy` | v0.4.0+ | The 5-tier fallback. The `tls-direct` route requires the `gost.loust.pro` CA pin deployed via `install-client.sh`. |
 
 SnapPipe's QUIC transport profiles are versioned in `Cargo.toml` and

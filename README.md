@@ -13,6 +13,40 @@ SnapPipe is meant to move the fallback story away from location-based addressing
 - sessions are gated by **signed tickets** before any peer attempts a handshake
 - relay infrastructure is designed to be **self-hosted** instead of tied to a paid managed relay tier
 
+## Install
+
+SnapPipe is published on [crates.io](https://crates.io/crates/snappipe) as
+`snappipe`. Requires a recent stable Rust toolchain (edition 2024, MSRV
+tracked in `Cargo.toml`).
+
+```bash
+# Add as a library dependency
+cargo add snappipe
+
+# Or install the CLI directly
+cargo install snappipe --locked
+```
+
+For development against the repository itself:
+
+```bash
+git clone https://github.com/LOUST-PRO/SnapPipe
+cd SnapPipe
+cargo build --release
+./target/release/snappipe --help
+```
+
+## Usage
+
+The CLI subcommands documented under [`## CLI`](#cli) below are the canonical
+entry points: `keygen`, `ticket issue|inspect|verify`, `relay sample-config`,
+`quic profile`, and `metrics`. See the CLI section for per-command flags and
+worked examples.
+
+For library consumers, the public API is the `SignedTicket`, `TrustStore`,
+`NonceStore`, `RateLimiter`, and QUIC transport profiles. The full rustdoc is
+generated with `cargo doc --no-deps --open`.
+
 ## Why this exists
 
 When strict NATs, firewalls, captive campus networks, or carrier-grade mobile networks force transport to degrade toward TCP-ish behavior, rollback-sensitive real-time sessions become fragile because of head-of-line blocking.

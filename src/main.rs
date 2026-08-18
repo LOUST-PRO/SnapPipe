@@ -106,7 +106,7 @@ enum QuicCommand {
 
 /// TCP-over-QUIC tunnel subcommands.
 ///
-/// `tunnel serve` runs on the operator's edge (e.g. the LZT relay VPS)
+/// `tunnel serve` runs on the operator's edge (e.g. the operator's relay VPS)
 /// and forwards every QUIC stream to a fixed local TCP backend.
 /// `tunnel connect` runs on the friend/customer side: it binds a local
 /// TCP port (e.g. 127.0.0.1:25566) and tunnels each accepted

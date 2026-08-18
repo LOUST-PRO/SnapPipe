@@ -1,16 +1,18 @@
-# Lou-maintained Hardening Addendum
+# Hardening Addendum
 
-This is a Lou-maintained fork. The upstream LICENSE applies; this
-addendum documents the hardening policy applied on top.
+This fork applies additional hardening on top of the upstream project. The
+upstream LICENSE applies; this addendum documents the hardening policy that
+this fork ships with.
 
 ## Hardening scope
 
 - **Sanitization**: PRs touching public-facing files (README, examples,
-  docs) MUST pass an `exporters-check`-style grep gate that rejects
-  internal IPs, home paths, PII, and recruiter handles.
+  docs) MUST pass a sanitize-gate that rejects internal paths, internal
+  IPs, PII, and recruiter handles before merge.
 - **Telemetry**: no auto-publish of runtime data. Users opt in explicitly.
-- **Defensive defaults**: fail-closed on ambiguous errors. No silent
-  fallbacks that could mask production issues.
+- **Fail-closed defaults**: on ambiguous errors, the toolkit refuses to
+  proceed rather than masking the issue with a silent fallback. Footguns
+  surface loudly instead of quietly.
 
 ## Maintenance
 
@@ -29,4 +31,5 @@ Permitted with attribution to both upstream and this fork.
 
 ## Cross-references
 
-- This fork's purpose: defensive engineering for production CI/CD
+- This fork's purpose: production hardening for QUIC transport workloads
+  where silent mask-faults would be worse than visible failures.

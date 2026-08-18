@@ -26,7 +26,7 @@ model, hardening posture, and known technical debt.
 | latest  | :white_check_mark: |
 | < 1.0   | :x:                |
 
-## Security Hardening (LZT additions)
+## Security Hardening (this fork)
 
 - Sanitization grep gate on public-facing changes
 - No telemetry or auto-publish
