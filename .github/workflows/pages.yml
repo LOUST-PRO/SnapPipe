@@ -1,0 +1,68 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup mdbook
+        uses: taiki-e/install-action@v2
+        with:
+          tool: mdbook@v0.4.43
+
+      - name: Setup mdbook-mermaid
+        run: |
+          set -euo pipefail
+          curl -fsSL https://github.com/badboy mdbook-mermaid/releases/download/v0.16.0/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz -o /tmp/mdbook-mermaid.tar.gz || \
+          curl -fsSL https://github.com/badboy/mdbook-mermaid/releases/download/v0.16.0/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz -o /tmp/mdbook-mermaid.tar.gz
+          tar -xzf /tmp/mdbook-mermaid.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/mdbook-mermaid /usr/local/bin/mdbook-mermaid
+          mdbook-mermaid --version
+
+      - name: Cache book artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            book/book
+            book/theme
+          key: mdbook-${{ runner.os }}-${{ hashFiles('book/book.toml', 'book/src/SUMMARY.md', 'book/theme/custom.css') }}
+          restore-keys: |
+            mdbook-${{ runner.os }}-
+
+      - name: Build book
+        working-directory: book
+        run: mdbook build
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: book/book
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

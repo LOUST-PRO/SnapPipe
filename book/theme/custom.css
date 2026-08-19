@@ -1,0 +1,21 @@
+/* SnapPipe — mdbook theme overrides */
+
+.content main { max-width: 900px; }
+
+table { border-collapse: collapse; }
+table th, table td { padding: 0.45rem 0.85rem; }
+
+pre code { font-size: 0.875em; line-height: 1.55; }
+
+:not(pre) > code {
+    padding: 0.10em 0.35em;
+    border-radius: 3px;
+}
+
+.header-anchor { opacity: 0.4; }
+:hover > .header-anchor { opacity: 1.0; }
+
+.edit-page { font-size: 0.85em; opacity: 0.7; }
+
+/* Mermaid diagrams: keep them on-brand and constrained */
+.mermaid { background: transparent !important; max-width: 100%; }
