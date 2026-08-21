@@ -26,7 +26,7 @@ jobs:
       - name: Setup mdbook
         uses: taiki-e/install-action@v2
         with:
-          tool: mdbook@v0.4.43
+          tool: mdbook@0.4.43
 
       - name: Setup mdbook-mermaid
         run: |
