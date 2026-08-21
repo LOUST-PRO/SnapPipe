@@ -31,7 +31,6 @@ jobs:
       - name: Setup mdbook-mermaid
         run: |
           set -euo pipefail
-          curl -fsSL https://github.com/badboy mdbook-mermaid/releases/download/v0.16.0/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz -o /tmp/mdbook-mermaid.tar.gz || \
           curl -fsSL https://github.com/badboy/mdbook-mermaid/releases/download/v0.16.0/mdbook-mermaid-v0.16.0-x86_64-unknown-linux-gnu.tar.gz -o /tmp/mdbook-mermaid.tar.gz
           tar -xzf /tmp/mdbook-mermaid.tar.gz -C /tmp
           sudo install -m 0755 /tmp/mdbook-mermaid /usr/local/bin/mdbook-mermaid
