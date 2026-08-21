@@ -1,11 +1,11 @@
 [package]
 name = "snappipe"
-version = "0.3.0"
+version = "0.3.1"
 edition = "2024"
 description = "Identity-based QUIC transport toolkit with signed tickets and self-hosted relay scaffolding"
 license = "Apache-2.0"
 repository = "https://github.com/LOUST-PRO/SnapPipe"
-homepage = "https://github.com/LOUST-PRO/SnapPipe"
+homepage = "https://loust-pro.github.io/SnapPipe/"
 readme = "README.md"
 keywords = ["quic", "p2p", "tickets", "relay", "networking"]
 categories = ["network-programming", "command-line-utilities"]
